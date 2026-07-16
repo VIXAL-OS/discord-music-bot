@@ -710,17 +710,16 @@ class EventRepository:
             await connection.commit()
         return added
 
-    async def get_role_for_genres(self, genres: tuple[str, ...]) -> int | None:
-        """Pick the role most of the event's genres point at.
+    async def get_roles_for_genres(self, genres: tuple[str, ...]) -> tuple[int, ...]:
+        """Return every role the event's genres point at, best match first.
 
-        Events carry several genres and the first one alphabetically is often
-        the least representative (a hardcore bill tagged "dance electronic,
-        hardcore punk, metal, punk" should ping Punk, not EDM). Majority vote
-        across all genre->role hits; ties go to the earliest-listed genre.
+        Events carry several genres, so a crossover bill can legitimately
+        belong to more than one community role. Distinct roles are ordered by
+        how many genres voted for them; ties go to the earliest-listed genre.
         """
         normalized = [normalize_text(genre) for genre in genres]
         if not normalized:
-            return None
+            return ()
         votes: dict[int, list[int]] = {}
         async with self.database.connect() as connection:
             for position, genre in enumerate(normalized):
@@ -732,9 +731,8 @@ class EventRepository:
                     role_id = int(row["role_id"])
                     entry = votes.setdefault(role_id, [0, position])
                     entry[0] += 1
-        if not votes:
-            return None
-        return max(votes.items(), key=lambda item: (item[1][0], -item[1][1]))[0]
+        ranked = sorted(votes.items(), key=lambda item: (-item[1][0], item[1][1]))
+        return tuple(role_id for role_id, _ in ranked)
 
     async def store_taste_preferences(self, kind: str, values: set[str], source: str) -> None:
         """Merge preference values for a kind/source; existing rows persist."""

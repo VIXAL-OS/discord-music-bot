@@ -12,7 +12,7 @@ class PublicationGateway(Protocol):
     async def create_or_find_scheduled_event(self, event: EventRecord) -> int: ...
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_id: int | None
+        self, event: EventRecord, role_ids: tuple[int, ...]
     ) -> int: ...
 
     async def update_published_event(
@@ -20,15 +20,29 @@ class PublicationGateway(Protocol):
         event: EventRecord,
         scheduled_event_id: int,
         announcement_message_id: int,
-        role_id: int | None,
+        role_ids: tuple[int, ...],
     ) -> None: ...
 
 
 class PublicationService:
-    def __init__(self, repository: EventRepository, gateway: PublicationGateway) -> None:
+    def __init__(
+        self,
+        repository: EventRepository,
+        gateway: PublicationGateway,
+        fallback_role_ids: frozenset[int] = frozenset(),
+    ) -> None:
         self.repository = repository
         self.gateway = gateway
+        # Catch-all buckets ("Other Music", "Other Events") only ping when no
+        # specific role matched; otherwise every event tagged "rock" would
+        # also ping the catch-all community.
+        self.fallback_role_ids = fallback_role_ids
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    async def _roles_for(self, event: EventRecord) -> tuple[int, ...]:
+        roles = await self.repository.get_roles_for_genres(event.genres)
+        specific = tuple(role for role in roles if role not in self.fallback_role_ids)
+        return specific or roles
 
     async def publish(self, event_id: str) -> EventRecord:
         async with self._locks[event_id]:
@@ -48,9 +62,9 @@ class PublicationService:
                 if announcement_id:
                     announcement_message_id = int(announcement_id)
                 else:
-                    role_id = await self.repository.get_role_for_genres(event.genres)
+                    role_ids = await self._roles_for(event)
                     announcement_message_id = await self.gateway.create_or_find_announcement(
-                        event, role_id
+                        event, role_ids
                     )
                     await self.repository.record_announcement(event_id, announcement_message_id)
 
@@ -74,10 +88,10 @@ class PublicationService:
             announcement_id = publication.get("announcement_message_id")
             if not scheduled_id or not announcement_id:
                 return
-            role_id = await self.repository.get_role_for_genres(event.genres)
+            role_ids = await self._roles_for(event)
             await self.gateway.update_published_event(
                 event,
                 int(scheduled_id),
                 int(announcement_id),
-                role_id,
+                role_ids,
             )

@@ -28,7 +28,14 @@ class MusicEventDiscordBot(commands.Bot):
         self.settings = app.settings
         self.repository = app.repository
         self.gateway = DiscordPublicationGateway(self, self.settings)
-        self.publication_service = PublicationService(self.repository, self.gateway)
+        fallback_roles = frozenset(
+            role_id
+            for genre, role_id in self.settings.role_map.items()
+            if genre.startswith("other")
+        )
+        self.publication_service = PublicationService(
+            self.repository, self.gateway, fallback_role_ids=fallback_roles
+        )
         self.scheduler = BotScheduler(self.settings)
         self._ready_once = False
         self._sync_once = False

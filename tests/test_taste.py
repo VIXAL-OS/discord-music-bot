@@ -408,26 +408,26 @@ class TestGenreRoleAliases:
         # "metal" already has an explicit bucket row; "witch house" is
         # ambiguous (two buckets); only "dance electronic" is aliased.
         assert added == 1
-        assert await repository.get_role_for_genres(("Dance/Electronic",)) == 111
-        assert await repository.get_role_for_genres(("Witch House",)) is None
-        assert await repository.get_role_for_genres(("Metal",)) == 222
+        assert await repository.get_roles_for_genres(("Dance/Electronic",)) == (111,)
+        assert await repository.get_roles_for_genres(("Witch House",)) == ()
+        assert await repository.get_roles_for_genres(("Metal",)) == (222,)
 
         # Manual overrides always win over re-seeded aliases.
         await repository.set_genre_role("dance electronic", 999)
         assert await repository.seed_genre_role_aliases(role_map) == 0
-        assert await repository.get_role_for_genres(("Dance/Electronic",)) == 999
+        assert await repository.get_roles_for_genres(("Dance/Electronic",)) == (999,)
 
-    async def test_role_choice_is_majority_vote(self, repository: EventRepository) -> None:
+    async def test_roles_are_ranked_by_genre_votes(self, repository: EventRepository) -> None:
         await repository.seed_genre_roles(
             {"dance electronic": 111, "punk": 222, "metal": 333, "hardcore punk": 222}
         )
         # Two punk-family genres outvote the single (alphabetically first)
-        # electronic genre.
+        # electronic genre; all matched roles are returned, best first.
         genres = ("Dance Electronic", "Hardcore Punk", "Metal", "Punk")
-        assert await repository.get_role_for_genres(genres) == 222
-        # A tie goes to the earliest-listed genre's role.
-        assert await repository.get_role_for_genres(("Metal", "Punk")) == 333
-        assert await repository.get_role_for_genres(("Unknown Genre",)) is None
+        assert await repository.get_roles_for_genres(genres) == (222, 111, 333)
+        # A tie is ordered by earliest-listed genre.
+        assert await repository.get_roles_for_genres(("Metal", "Punk")) == (333, 222)
+        assert await repository.get_roles_for_genres(("Unknown Genre",)) == ()
 
 
 class StubFetcher:

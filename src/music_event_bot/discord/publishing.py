@@ -12,6 +12,22 @@ def event_marker(event_id: str) -> str:
     return f"[music-event-id:{event_id}]"
 
 
+def _role_content(role_ids: tuple[int, ...], suffix: str) -> str:
+    if not role_ids:
+        return suffix
+    mentions = " ".join(f"<@&{role_id}>" for role_id in role_ids)
+    return f"{mentions} {suffix}"
+
+
+def _role_mentions(role_ids: tuple[int, ...]) -> discord.AllowedMentions:
+    return discord.AllowedMentions(
+        everyone=False,
+        users=False,
+        roles=[discord.Object(id=role_id) for role_id in role_ids] if role_ids else False,
+        replied_user=False,
+    )
+
+
 def event_embed(event: EventRecord, *, pending: bool = False) -> discord.Embed:
     color = discord.Color.orange() if pending else discord.Color.blurple()
     embed = discord.Embed(
@@ -85,7 +101,7 @@ class DiscordPublicationGateway:
         return scheduled.id
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_id: int | None
+        self, event: EventRecord, role_ids: tuple[int, ...]
     ) -> int:
         channel = await self._announcement_channel()
         marker = event_marker(event.id)
@@ -95,13 +111,8 @@ class DiscordPublicationGateway:
             ):
                 return message.id
 
-        content = f"<@&{role_id}> New show alert!" if role_id else "New show alert!"
-        allowed_mentions = discord.AllowedMentions(
-            everyone=False,
-            users=False,
-            roles=[discord.Object(id=role_id)] if role_id else False,
-            replied_user=False,
-        )
+        content = _role_content(role_ids, "New show alert!")
+        allowed_mentions = _role_mentions(role_ids)
         message = await channel.send(
             content=content,
             embed=event_embed(event),
@@ -114,7 +125,7 @@ class DiscordPublicationGateway:
         event: EventRecord,
         scheduled_event_id: int,
         announcement_message_id: int,
-        role_id: int | None,
+        role_ids: tuple[int, ...],
     ) -> None:
         guild = await self._guild()
         scheduled = await guild.fetch_scheduled_event(scheduled_event_id)
@@ -136,16 +147,10 @@ class DiscordPublicationGateway:
         )
         channel = await self._announcement_channel()
         message = await channel.fetch_message(announcement_message_id)
-        content = f"<@&{role_id}> Updated show listing" if role_id else "Updated show listing"
         await message.edit(
-            content=content,
+            content=_role_content(role_ids, "Updated show listing"),
             embed=event_embed(event),
-            allowed_mentions=discord.AllowedMentions(
-                everyone=False,
-                users=False,
-                roles=[discord.Object(id=role_id)] if role_id else False,
-                replied_user=False,
-            ),
+            allowed_mentions=_role_mentions(role_ids),
         )
 
     async def _guild(self) -> discord.Guild:
