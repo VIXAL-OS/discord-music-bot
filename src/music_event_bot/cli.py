@@ -39,6 +39,11 @@ def _write_refresh_token(path: Path, refresh_token: str) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="music-event-bot")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        help="Append logs to this UTF-8 file in addition to the console",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("migrate", help="Apply SQLite migrations")
     subparsers.add_parser("health", help="Show configuration and database health")
@@ -159,9 +164,14 @@ async def _run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = _parser().parse_args()
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if args.log_file is not None:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(args.log_file, encoding="utf-8"))
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
