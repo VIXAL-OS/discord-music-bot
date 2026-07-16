@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 
 import discord
@@ -19,6 +21,18 @@ from music_event_bot.services.publishing import PublicationService
 from music_event_bot.services.scheduler import BotScheduler
 
 logger = logging.getLogger(__name__)
+
+
+def review_card_hash(embed: discord.Embed, has_view: bool) -> str:
+    """Fingerprint of the rendered review card.
+
+    Cards are only edited when this changes; unconditional re-edits of every
+    posted card each sync cycle drown in Discord's per-channel PATCH limits.
+    """
+    payload = json.dumps(
+        {"embed": embed.to_dict(), "view": has_view}, sort_keys=True, default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class MusicEventDiscordBot(commands.Bot):
@@ -129,22 +143,30 @@ class MusicEventDiscordBot(commands.Bot):
         if event is None:
             return
         channel = channel or await self._review_channel()
-        message_id = await self.repository.get_review_message_id(event_id)
         view = (
             EventReviewView(self, event_id)
             if event.status
             in {EventStatus.PENDING_REVIEW, EventStatus.INCOMPLETE, EventStatus.PUBLISH_FAILED}
             else None
         )
+        embed = review_embed(event)
+        card_hash = review_card_hash(embed, view is not None)
+        message_id, stored_hash = await self.repository.get_review_sync_state(event_id)
+        if message_id and stored_hash == card_hash:
+            # Nothing on the card changed; skip the fetch and edit entirely.
+            return
         if message_id:
             try:
                 message = await channel.fetch_message(message_id)
-                await message.edit(embed=review_embed(event), view=view)
+                await message.edit(embed=embed, view=view)
+                await self.repository.set_review_message(
+                    event_id, channel.id, message.id, card_hash
+                )
                 return
             except discord.NotFound:
                 logger.warning("Stored review message %s no longer exists", message_id)
-        message = await channel.send(embed=review_embed(event), view=view)
-        await self.repository.set_review_message(event_id, channel.id, message.id)
+        message = await channel.send(embed=embed, view=view)
+        await self.repository.set_review_message(event_id, channel.id, message.id, card_hash)
 
     async def refresh_review_message(self, event_id: str) -> None:
         await self.sync_event_review(event_id)

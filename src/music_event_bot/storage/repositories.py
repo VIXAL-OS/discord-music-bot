@@ -403,21 +403,41 @@ class EventRepository:
             row = await cursor.fetchone()
             return int(row["review_message_id"]) if row and row["review_message_id"] else None
 
-    async def set_review_message(self, event_id: str, channel_id: int, message_id: int) -> None:
+    async def get_review_sync_state(self, event_id: str) -> tuple[int | None, str | None]:
+        """Return the posted review message ID and the card hash it carries."""
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT review_message_id, card_hash FROM reviews WHERE event_id = ?",
+                (event_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None or not row["review_message_id"]:
+                return None, None
+            return int(row["review_message_id"]), row["card_hash"]
+
+    async def set_review_message(
+        self,
+        event_id: str,
+        channel_id: int,
+        message_id: int,
+        card_hash: str | None = None,
+    ) -> None:
         now = _now().isoformat()
         async with self.database.connect() as connection:
             await connection.execute(
                 """
                 INSERT INTO reviews(
-                    event_id, review_channel_id, review_message_id, notified_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    event_id, review_channel_id, review_message_id, notified_at,
+                    card_hash, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_id) DO UPDATE SET
                     review_channel_id = excluded.review_channel_id,
                     review_message_id = excluded.review_message_id,
                     notified_at = COALESCE(reviews.notified_at, excluded.notified_at),
+                    card_hash = excluded.card_hash,
                     updated_at = excluded.updated_at
                 """,
-                (event_id, str(channel_id), str(message_id), now, now),
+                (event_id, str(channel_id), str(message_id), now, card_hash, now),
             )
             await connection.commit()
 

@@ -135,6 +135,12 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         ALTER TABLE events ADD COLUMN artists_json TEXT NOT NULL DEFAULT '[]';
         """,
     ),
+    (
+        5,
+        """
+        ALTER TABLE reviews ADD COLUMN card_hash TEXT;
+        """,
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

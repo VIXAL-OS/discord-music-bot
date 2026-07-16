@@ -38,6 +38,96 @@ def _record(**overrides: Any) -> EventRecord:
     return EventRecord(**values)
 
 
+class _ReviewRepoStub:
+    def __init__(self, record: EventRecord, stored_hash: str | None) -> None:
+        self.record = record
+        self.stored_hash = stored_hash
+        self.saved: list[tuple[str, int, int, str | None]] = []
+
+    async def get_event(self, event_id: str) -> EventRecord:
+        return self.record
+
+    async def get_review_sync_state(self, event_id: str) -> tuple[int | None, str | None]:
+        return 111, self.stored_hash
+
+    async def set_review_message(
+        self, event_id: str, channel_id: int, message_id: int, card_hash: str | None = None
+    ) -> None:
+        self.saved.append((event_id, channel_id, message_id, card_hash))
+
+
+def _review_bot(repo: _ReviewRepoStub) -> MusicEventDiscordBot:
+    settings = Settings(
+        _env_file=None,
+        discord_token="test-token",
+        discord_guild_id=1,
+        review_channel_id=2,
+        announcement_channel_id=3,
+        admin_user_ids="4",
+    )
+    app = cast(
+        Application,
+        SimpleNamespace(
+            settings=settings,
+            repository=repo,
+            discovery=SimpleNamespace(run=None),
+            profile=SimpleNamespace(),
+        ),
+    )
+    return MusicEventDiscordBot(app)
+
+
+@pytest.mark.asyncio
+async def test_sync_event_review_skips_unchanged_cards() -> None:
+    from music_event_bot.discord.bot import review_card_hash
+    from music_event_bot.discord.review import review_embed
+
+    record = _record()
+    repo = _ReviewRepoStub(record, stored_hash=None)
+    bot = _review_bot(repo)
+    try:
+        current_hash = review_card_hash(review_embed(record), has_view=True)
+        repo.stored_hash = current_hash
+
+        async def fail_fetch(message_id: int) -> None:
+            raise AssertionError("unchanged card must not be fetched or edited")
+
+        async def fail_send(**kwargs: Any) -> None:
+            raise AssertionError("unchanged card must not be re-sent")
+
+        channel = SimpleNamespace(id=2, fetch_message=fail_fetch, send=fail_send)
+        await bot.sync_event_review(record.id, channel=channel)  # type: ignore[arg-type]
+        assert repo.saved == []
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_event_review_edits_when_card_changed() -> None:
+    record = _record()
+    repo = _ReviewRepoStub(record, stored_hash="stale-hash")
+    bot = _review_bot(repo)
+    try:
+        edits: list[dict[str, Any]] = []
+
+        async def edit(**kwargs: Any) -> None:
+            edits.append(kwargs)
+
+        message = SimpleNamespace(id=111, edit=edit)
+
+        async def fetch_message(message_id: int) -> SimpleNamespace:
+            assert message_id == 111
+            return message
+
+        channel = SimpleNamespace(id=2, fetch_message=fetch_message)
+        await bot.sync_event_review(record.id, channel=channel)  # type: ignore[arg-type]
+        assert len(edits) == 1
+        assert len(repo.saved) == 1
+        assert repo.saved[0][3] is not None  # the fresh card hash was stored
+    finally:
+        await bot.close()
+
+
 def test_full_description_is_kept_and_score_is_reviewer_only() -> None:
     description = "Doors 7 PM\n\nBag policy: small bags only.\n\nRain or shine."
     record = _record(description=description, artists=("Headliner",))
