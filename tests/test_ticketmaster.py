@@ -52,6 +52,26 @@ def _ticketmaster_event(event_id: str, name: str, **overrides):
     return event
 
 
+def test_duplicate_info_and_please_note_kept_once(tmp_path, discovery_window) -> None:
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "events.sqlite3",
+        ticketmaster_api_key="test-api-key",
+        discovery_latitude=40.7,
+        discovery_longitude=-74.0,
+    )
+    source = TicketmasterSource(settings)
+    raw = _ticketmaster_event(
+        "dup-1",
+        "Dup Show",
+        info="Doors 7 PM. Rain or shine.",
+        pleaseNote="Doors 7 PM. Rain or shine.",
+    )
+    parsed = source._parse_event(raw, discovery_window, settings.ticketmaster_cells[0])
+    assert parsed is not None
+    assert parsed.description == "Doors 7 PM. Rain or shine.\n\nListed price range: 25–75 USD"
+
+
 @pytest.mark.asyncio
 async def test_ticketmaster_parses_events_and_follows_pages(tmp_path, discovery_window) -> None:
     settings = Settings(

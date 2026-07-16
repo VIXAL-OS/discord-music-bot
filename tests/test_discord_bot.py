@@ -9,7 +9,7 @@ import pytest
 from music_event_bot.app import Application
 from music_event_bot.config import Settings
 from music_event_bot.discord.bot import MusicEventDiscordBot
-from music_event_bot.discord.publishing import _description_summary, event_embed
+from music_event_bot.discord.publishing import event_embed
 from music_event_bot.domain.models import EventRecord, EventStatus
 
 
@@ -38,11 +38,21 @@ def _record(**overrides: Any) -> EventRecord:
     return EventRecord(**values)
 
 
-def test_long_descriptions_are_summarized() -> None:
-    summary = _description_summary("policy line\n\n" + "x" * 1000)
-    assert len(summary) <= 350
-    assert summary.endswith("…")
-    assert "\n" not in summary
+def test_full_description_is_kept_and_score_is_reviewer_only() -> None:
+    description = "Doors 7 PM\n\nBag policy: small bags only.\n\nRain or shine."
+    record = _record(description=description, artists=("Headliner",))
+
+    review = event_embed(record, pending=True)
+    assert review.description == description
+    assert review.footer.text is not None
+    assert "score 90/100" in review.footer.text
+    assert "music-event-id:e1" in review.footer.text
+
+    published = event_embed(record)
+    assert published.description == description
+    assert published.footer.text is not None
+    assert "score" not in published.footer.text
+    assert "music-event-id:e1" in published.footer.text
 
 
 def test_lineup_field_shows_full_bill() -> None:

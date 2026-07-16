@@ -12,26 +12,13 @@ def event_marker(event_id: str) -> str:
     return f"[music-event-id:{event_id}]"
 
 
-def _description_summary(description: str | None, limit: int = 350) -> str:
-    """Compact a source description to a short single paragraph.
-
-    Ticketmaster descriptions are mostly venue policy boilerplate; the card
-    links to the full listing, so a trimmed preview keeps the useful lines
-    (door times, prices) without burying the event details.
-    """
-    if not description:
-        return ""
-    text = " ".join(description.split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
 def event_embed(event: EventRecord, *, pending: bool = False) -> discord.Embed:
     color = discord.Color.orange() if pending else discord.Color.blurple()
     embed = discord.Embed(
         title=event.title,
-        description=_description_summary(event.description),
+        # Full source text by reviewer preference: door times, bag policies,
+        # and rain-or-shine notes are useful; duplication is removed upstream.
+        description=(event.description or "")[:4000],
         color=color,
         url=event.url,
     )
@@ -53,7 +40,12 @@ def event_embed(event: EventRecord, *, pending: bool = False) -> discord.Embed:
         embed.add_field(name="Source / tickets", value=f"[Open listing]({event.url})", inline=False)
     if event.image_url:
         embed.set_image(url=event.image_url)
-    embed.set_footer(text=f"{event_marker(event.id)} • score {event.score}/100")
+    # The marker must appear on every embed (it is how announcements are
+    # re-found after a crash), but the match score is reviewer-only.
+    footer = event_marker(event.id)
+    if pending:
+        footer += f" • score {event.score}/100"
+    embed.set_footer(text=footer)
     return embed
 
 
