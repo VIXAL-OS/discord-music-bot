@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+data/
+*.db
+*.db-shm
+*.db-wal
+.spotify_cache
+.cache
+.spotify_refresh_token
+music_events.log

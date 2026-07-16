@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "music-event-bot"
+version = "0.1.0"
+description = "Discover, review, and publish music events to Discord"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "APScheduler>=3.10,<4",
+  "aiosqlite>=0.20,<1",
+  "anthropic>=0.90,<1",
+  "discord.py>=2.5,<3",
+  "feedparser>=6.0,<7",
+  "httpx>=0.27,<1",
+  "icalendar>=6.0,<7",
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.6,<3",
+  "python-dateutil>=2.9,<3",
+  "recurring-ical-events>=3.4,<4",
+  "spotipy>=2.24,<3",
+  "tzdata>=2025.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.13,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<1",
+  "respx>=0.22,<1",
+  "ruff>=0.8,<1",
+]
+
+[project.scripts]
+music-event-bot = "music_event_bot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/music_event_bot"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["music_event_bot"]
+strict = true
+warn_unused_ignores = false

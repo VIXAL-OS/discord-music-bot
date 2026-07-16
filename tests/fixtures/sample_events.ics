@@ -1,0 +1,16 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Mycelial Institute//Music Event Bot Verification//EN
+X-WR-TIMEZONE:America/New_York
+BEGIN:VEVENT
+UID:verify-show-1@example.test
+DTSTAMP:20260715T160000Z
+DTSTART;TZID=America/New_York:20260920T200000
+DTEND;TZID=America/New_York:20260920T230000
+SUMMARY:Verification Band at Sample Hall
+LOCATION:Sample Hall, 123 Example Street, Pittsburgh, PA
+URL:https://example.test/tickets/verification-band
+CATEGORIES:Indie Rock,Post Rock
+DESCRIPTION:A local fixture used to verify the event discovery CLI.
+END:VEVENT
+END:VCALENDAR
