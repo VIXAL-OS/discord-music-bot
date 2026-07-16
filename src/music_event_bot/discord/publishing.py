@@ -12,15 +12,32 @@ def event_marker(event_id: str) -> str:
     return f"[music-event-id:{event_id}]"
 
 
+def _description_summary(description: str | None, limit: int = 350) -> str:
+    """Compact a source description to a short single paragraph.
+
+    Ticketmaster descriptions are mostly venue policy boilerplate; the card
+    links to the full listing, so a trimmed preview keeps the useful lines
+    (door times, prices) without burying the event details.
+    """
+    if not description:
+        return ""
+    text = " ".join(description.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 def event_embed(event: EventRecord, *, pending: bool = False) -> discord.Embed:
     color = discord.Color.orange() if pending else discord.Color.blurple()
     embed = discord.Embed(
         title=event.title,
-        description=(event.description or "")[:4000],
+        description=_description_summary(event.description),
         color=color,
         url=event.url,
     )
-    if event.artist:
+    if len(event.artists) > 1:
+        embed.add_field(name="Lineup", value=", ".join(event.artists)[:1024], inline=False)
+    elif event.artist:
         embed.add_field(name="Artist", value=event.artist, inline=True)
     if event.starts_at:
         embed.add_field(

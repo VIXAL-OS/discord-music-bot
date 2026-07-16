@@ -243,10 +243,15 @@ class TicketmasterSource:
             if minimum is not None and maximum is not None:
                 price = f"{minimum:g}–{maximum:g} {currency}".strip()
 
-        description_parts = [raw.get("info"), raw.get("pleaseNote")]
+        # info and pleaseNote frequently carry identical text; keep one copy.
+        description_parts: list[str] = []
+        for part in (raw.get("info"), raw.get("pleaseNote")):
+            text = str(part).strip() if part else ""
+            if text and text not in description_parts:
+                description_parts.append(text)
         if price:
             description_parts.append(f"Listed price range: {price}")
-        description = "\n\n".join(str(part) for part in description_parts if part) or None
+        description = "\n\n".join(description_parts) or None
 
         incomplete: list[str] = []
         if starts_at is None:

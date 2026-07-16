@@ -1,13 +1,62 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from music_event_bot.app import Application
 from music_event_bot.config import Settings
 from music_event_bot.discord.bot import MusicEventDiscordBot
+from music_event_bot.discord.publishing import _description_summary, event_embed
+from music_event_bot.domain.models import EventRecord, EventStatus
+
+
+def _record(**overrides: Any) -> EventRecord:
+    values: dict[str, Any] = {
+        "id": "e1",
+        "title": "Show",
+        "artist": "Headliner",
+        "artists": ("Headliner", "Opener One", "Opener Two"),
+        "venue": "Hall",
+        "location": "Hall, Pittsburgh, PA",
+        "starts_at": datetime(2026, 8, 1, 23, 0, tzinfo=UTC),
+        "ends_at": None,
+        "timezone": "America/New_York",
+        "url": "https://tickets.example.test/1",
+        "image_url": None,
+        "description": None,
+        "genres": ("metal",),
+        "status": EventStatus.PENDING_REVIEW,
+        "score": 90,
+        "match_reasons": ("artist match: Headliner",),
+        "created_at": datetime(2026, 7, 16, tzinfo=UTC),
+        "updated_at": datetime(2026, 7, 16, tzinfo=UTC),
+    }
+    values.update(overrides)
+    return EventRecord(**values)
+
+
+def test_long_descriptions_are_summarized() -> None:
+    summary = _description_summary("policy line\n\n" + "x" * 1000)
+    assert len(summary) <= 350
+    assert summary.endswith("…")
+    assert "\n" not in summary
+
+
+def test_lineup_field_shows_full_bill() -> None:
+    embed = event_embed(_record(), pending=True)
+    fields = {field.name: field.value for field in embed.fields}
+    assert fields["Lineup"] == "Headliner, Opener One, Opener Two"
+    assert "Artist" not in fields
+
+
+def test_single_artist_keeps_artist_field() -> None:
+    embed = event_embed(_record(artists=("Headliner",)), pending=True)
+    fields = {field.name: field.value for field in embed.fields}
+    assert fields["Artist"] == "Headliner"
+    assert "Lineup" not in fields
 
 
 @pytest.mark.asyncio
