@@ -711,18 +711,30 @@ class EventRepository:
         return added
 
     async def get_role_for_genres(self, genres: tuple[str, ...]) -> int | None:
+        """Pick the role most of the event's genres point at.
+
+        Events carry several genres and the first one alphabetically is often
+        the least representative (a hardcore bill tagged "dance electronic,
+        hardcore punk, metal, punk" should ping Punk, not EDM). Majority vote
+        across all genre->role hits; ties go to the earliest-listed genre.
+        """
         normalized = [normalize_text(genre) for genre in genres]
         if not normalized:
             return None
+        votes: dict[int, list[int]] = {}
         async with self.database.connect() as connection:
-            for genre in normalized:
+            for position, genre in enumerate(normalized):
                 cursor = await connection.execute(
                     "SELECT role_id FROM genre_roles WHERE genre = ?", (genre,)
                 )
                 row = await cursor.fetchone()
                 if row:
-                    return int(row["role_id"])
-        return None
+                    role_id = int(row["role_id"])
+                    entry = votes.setdefault(role_id, [0, position])
+                    entry[0] += 1
+        if not votes:
+            return None
+        return max(votes.items(), key=lambda item: (item[1][0], -item[1][1]))[0]
 
     async def store_taste_preferences(self, kind: str, values: set[str], source: str) -> None:
         """Merge preference values for a kind/source; existing rows persist."""

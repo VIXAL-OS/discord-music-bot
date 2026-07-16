@@ -417,6 +417,18 @@ class TestGenreRoleAliases:
         assert await repository.seed_genre_role_aliases(role_map) == 0
         assert await repository.get_role_for_genres(("Dance/Electronic",)) == 999
 
+    async def test_role_choice_is_majority_vote(self, repository: EventRepository) -> None:
+        await repository.seed_genre_roles(
+            {"dance electronic": 111, "punk": 222, "metal": 333, "hardcore punk": 222}
+        )
+        # Two punk-family genres outvote the single (alphabetically first)
+        # electronic genre.
+        genres = ("Dance Electronic", "Hardcore Punk", "Metal", "Punk")
+        assert await repository.get_role_for_genres(genres) == 222
+        # A tie goes to the earliest-listed genre's role.
+        assert await repository.get_role_for_genres(("Metal", "Punk")) == 333
+        assert await repository.get_role_for_genres(("Unknown Genre",)) is None
+
 
 class StubFetcher:
     source = "lastfm"
