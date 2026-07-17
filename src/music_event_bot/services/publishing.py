@@ -36,6 +36,7 @@ class PublicationService:
         repository: EventRepository,
         gateway: PublicationGateway,
         fallback_role_ids: frozenset[int] = frozenset(),
+        catchall_role_ids: frozenset[int] | None = None,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
@@ -43,6 +44,11 @@ class PublicationService:
         # specific role matched; otherwise every event tagged "rock" would
         # also ping the catch-all community.
         self.fallback_role_ids = fallback_role_ids
+        # When an event matches nothing anywhere, only these roles hear about
+        # it (typically just "Other Music", not every catch-all bucket).
+        self.catchall_role_ids = (
+            catchall_role_ids if catchall_role_ids is not None else fallback_role_ids
+        )
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def _roles_for(self, event: EventRecord) -> tuple[int, ...]:
@@ -70,9 +76,9 @@ class PublicationService:
                     return bucket_specific
         if roles:
             return roles
-        # Nothing matched anywhere: ping the catch-all communities rather
-        # than publishing silently.
-        return tuple(sorted(self.fallback_role_ids))
+        # Nothing matched anywhere: ping the music catch-all rather than
+        # publishing silently.
+        return tuple(sorted(self.catchall_role_ids))
 
     async def publish(self, event_id: str) -> EventRecord:
         async with self._locks[event_id]:

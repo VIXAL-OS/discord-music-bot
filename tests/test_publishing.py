@@ -295,6 +295,26 @@ async def test_catchall_pinged_when_nothing_matches_at_all(
 
 
 @pytest.mark.asyncio
+async def test_last_resort_pings_music_catchall_only(repository, complete_event) -> None:
+    from dataclasses import replace
+
+    # Ticketmaster's "other" genre maps to no role: only the music catch-all
+    # should hear about it, not every "other"-bucket community.
+    mystery = replace(complete_event, genres=("other",), artists=())
+    event = await _approved_event(repository, mystery)
+    gateway = FakePublicationGateway()
+    service = PublicationService(
+        repository,
+        gateway,
+        fallback_role_ids=frozenset({98, 99}),
+        catchall_role_ids=frozenset({99}),
+    )
+
+    await service.publish(event.id)
+    assert gateway.announcement_calls == [(event.id, (99,), 7001)]
+
+
+@pytest.mark.asyncio
 async def test_publish_records_success_and_reuses_existing_external_resources(
     repository, complete_event
 ) -> None:

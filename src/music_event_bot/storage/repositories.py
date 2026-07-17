@@ -469,6 +469,39 @@ class EventRepository:
                     flagged.append((pub.title, min(closer)[1].title))
         return flagged
 
+    async def review_queue_snapshot(
+        self, limit: int
+    ) -> tuple[int, int, list[EventRecord]]:
+        """(queue size, cards already posted, next unposted events in post order)."""
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT COUNT(*) AS n FROM events "
+                "WHERE status IN ('pending_review', 'incomplete')"
+            )
+            row = await cursor.fetchone()
+            total = int(row["n"]) if row else 0
+            cursor = await connection.execute(
+                """
+                SELECT COUNT(*) AS n FROM events e JOIN reviews r ON r.event_id = e.id
+                WHERE e.status IN ('pending_review', 'incomplete')
+                  AND r.review_message_id IS NOT NULL
+                """
+            )
+            row = await cursor.fetchone()
+            posted = int(row["n"]) if row else 0
+            cursor = await connection.execute(
+                """
+                SELECT e.* FROM events e LEFT JOIN reviews r ON r.event_id = e.id
+                WHERE e.status IN ('pending_review', 'incomplete')
+                  AND r.review_message_id IS NULL
+                ORDER BY e.score DESC, e.starts_at, e.id
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            events = [_event_from_row(row) for row in await cursor.fetchall()]
+        return total, posted, events
+
     async def clear_review_message(self, event_id: str) -> None:
         now = _now().isoformat()
         async with self.database.connect() as connection:

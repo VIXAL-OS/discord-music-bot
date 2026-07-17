@@ -82,8 +82,22 @@ class MusicEventDiscordBot(commands.Bot):
             for genre, role_id in self.settings.role_map.items()
             if genre.startswith("other")
         )
+        # When nothing matches at all, ping only the music catch-all; the
+        # "Other Events" community is for non-music listings that arrive
+        # with their own genre labels.
+        catchall_roles = (
+            frozenset(
+                role_id
+                for genre, role_id in self.settings.role_map.items()
+                if genre == "other music"
+            )
+            or fallback_roles
+        )
         self.publication_service = PublicationService(
-            self.repository, self.gateway, fallback_role_ids=fallback_roles
+            self.repository,
+            self.gateway,
+            fallback_role_ids=fallback_roles,
+            catchall_role_ids=catchall_roles,
         )
         self.scheduler = BotScheduler(self.settings)
         self._ready_once = False
@@ -326,7 +340,10 @@ class MusicEventDiscordBot(commands.Bot):
             return
         if message.guild is None or message.guild.id != self.settings.discord_guild_id:
             return
-        if self.user not in message.mentions:
+        # Require the mention to be typed in the message text. Replying to
+        # one of the bot's messages also puts it in message.mentions, and
+        # commentary on an announcement is not an event request.
+        if not re.search(rf"<@!?{self.user.id}>", message.content):
             return
         try:
             await self._handle_event_request(message)
@@ -498,6 +515,42 @@ class MusicEventDiscordBot(commands.Bot):
             await self.sync_event_review(result.event.id)
             await interaction.response.send_message(
                 f"Queued `{result.event.id}` for review.", ephemeral=True
+            )
+
+        @group.command(
+            name="queue", description="Show what's waiting in the review and publish queues"
+        )
+        async def queue_view(interaction: discord.Interaction) -> None:
+            if not await require_reviewer(interaction, self.settings):
+                return
+            total, posted, next_up = await self.repository.review_queue_snapshot(8)
+            approved = await self.repository.list_events(EventStatus.APPROVED)
+
+            def line(event: EventRecord, *, with_score: bool) -> str:
+                when = (
+                    f"<t:{int(event.starts_at.timestamp())}:d>"
+                    if event.starts_at
+                    else "date TBD"
+                )
+                prefix = f"`{event.score:>3}` " if with_score else ""
+                return f"- {prefix}{event.title[:60]} — {event.venue or '?'}, {when}"
+
+            lines = [
+                f"**Review queue:** {total} events, {posted} cards posted, "
+                f"{total - posted} still waiting "
+                f"(posting {self.settings.review_post_batch_size} per sync cycle)."
+            ]
+            if next_up:
+                lines.append("Next cards up (highest score first):")
+                lines.extend(line(event, with_score=True) for event in next_up)
+            lines.append("")
+            lines.append(
+                f"**Publish queue:** {len(approved)} approved, announcing up to "
+                f"{self.settings.publish_batch_per_hour}/hour, soonest show first."
+            )
+            lines.extend(line(event, with_score=False) for event in approved[:8])
+            await interaction.response.send_message(
+                "\n".join(lines)[:1990], ephemeral=True
             )
 
         @group.command(name="show", description="Show an event record")
