@@ -385,12 +385,15 @@ class EventRepository:
             return [_event_from_row(row) for row in await cursor.fetchall()]
 
     async def dedupe_tour_events(self, home: GeoPoint, max_radius_miles: int) -> int:
-        """Keep only the closest undecided stop of each matched artist's tour.
+        """Keep only the closest stop of each artist's tour among undecided events.
 
-        Events sharing an "artist match: X" reason are the same tour seen in
-        several cities; only the stop nearest home needs review. Events
-        without coordinates count as farthest. Decided events (approved,
-        published, rejected) are never touched.
+        Tours are grouped by normalized headliner (falling back to the
+        "artist match: X" reason for lineup-less title matches). Approved and
+        published stops anchor their group: undecided siblings farther than
+        the anchor are deleted, but a strictly closer sibling survives so the
+        reviewer can catch a wrong pick. Guards: same-venue siblings are kept
+        (multi-night runs), stops more than 60 days apart are separate
+        engagements, and human-requested events are never touched.
         """
         async with self.database.connect() as connection:
             # Human-initiated events (slash submissions, @mention requests)
@@ -405,31 +408,73 @@ class EventRepository:
                   )
                 """
             )
-            events = [_event_from_row(row) for row in await cursor.fetchall()]
-        by_artist: dict[str, list[EventRecord]] = {}
-        for event in events:
+            candidates = [_event_from_row(row) for row in await cursor.fetchall()]
+            cursor = await connection.execute(
+                "SELECT * FROM events "
+                "WHERE status IN ('approved', 'published', 'publish_failed')"
+            )
+            anchors = [_event_from_row(row) for row in await cursor.fetchall()]
+
+        def group_key(event: EventRecord) -> str:
+            if event.artist:
+                return normalize_text(event.artist)
+            for name in event.artists:
+                normalized = normalize_text(name)
+                if normalized:
+                    return normalized
             for reason in event.match_reasons:
                 if reason.startswith("artist match: "):
-                    key = normalize_text(reason[len("artist match: ") :])
-                    if key:
-                        by_artist.setdefault(key, []).append(event)
-                    break
+                    return normalize_text(reason[len("artist match: ") :])
+            return ""
+
+        def distance(record: EventRecord) -> float:
+            if record.venue_latitude is None or record.venue_longitude is None:
+                return float(max_radius_miles) * 10
+            return haversine_miles(
+                home, GeoPoint(record.venue_latitude, record.venue_longitude)
+            )
+
+        grouped: dict[str, list[EventRecord]] = {}
+        for event in candidates:
+            key = group_key(event)
+            if key:
+                grouped.setdefault(key, []).append(event)
+        anchors_by_key: dict[str, list[EventRecord]] = {}
+        for event in anchors:
+            key = group_key(event)
+            if key in grouped:
+                anchors_by_key.setdefault(key, []).append(event)
+
         to_delete: list[str] = []
-        for siblings in by_artist.values():
-            if len(siblings) < 2:
-                continue
-
-            def sort_key(record: EventRecord) -> tuple[float, str]:
-                if record.venue_latitude is None or record.venue_longitude is None:
-                    distance = float(max_radius_miles) * 10
-                else:
-                    distance = haversine_miles(
-                        home, GeoPoint(record.venue_latitude, record.venue_longitude)
-                    )
-                return distance, record.starts_at.isoformat() if record.starts_at else "~"
-
-            ordered = sorted(siblings, key=sort_key)
-            to_delete.extend(record.id for record in ordered[1:])
+        for key, siblings in grouped.items():
+            kept = anchors_by_key.get(key, [])
+            rest = siblings
+            if not kept:
+                if len(siblings) < 2:
+                    continue
+                ordered = sorted(
+                    siblings,
+                    key=lambda r: (
+                        distance(r),
+                        r.starts_at.isoformat() if r.starts_at else "~",
+                    ),
+                )
+                kept = [ordered[0]]
+                rest = ordered[1:]
+            kept_venues = {normalize_text(k.venue) for k in kept if k.venue}
+            nearest_kept = min(distance(k) for k in kept)
+            for record in rest:
+                if record.starts_at is None:
+                    continue
+                if record.venue and normalize_text(record.venue) in kept_venues:
+                    continue
+                same_tour = any(
+                    k.starts_at is not None
+                    and abs((record.starts_at - k.starts_at).days) <= 60
+                    for k in kept
+                )
+                if same_tour and distance(record) > nearest_kept:
+                    to_delete.append(record.id)
         if to_delete:
             async with self.database.connect() as connection:
                 await connection.execute("PRAGMA foreign_keys = ON")

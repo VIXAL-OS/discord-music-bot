@@ -243,12 +243,20 @@ _ARTIST_MATCH_SCORE = ScoreResult(
 )
 
 
-def _tour_stop(complete_event, source_event_id: str, title: str, venue: str, **coords):
+def _tour_stop(
+    complete_event,
+    source_event_id: str,
+    title: str,
+    venue: str,
+    artist: str = "Man Man",
+    **coords,
+):
     return replace(
         complete_event,
         source_event_id=source_event_id,
         title=title,
         venue=venue,
+        artist=artist,
         **coords,
     )
 
@@ -281,6 +289,7 @@ async def test_tour_dedupe_keeps_only_the_closest_pending_stop(
         "solo-1",
         "A Different Band",
         "Elsewhere",
+        artist="A Different Band",
         venue_latitude=40.45,
         venue_longitude=-79.99,
     )
@@ -306,6 +315,47 @@ async def test_tour_dedupe_keeps_only_the_closest_pending_stop(
     assert remaining == {"Man Man at Mr Smalls", "A Different Band"}
     # Idempotent: a second pass finds nothing left to trim.
     assert await repository.dedupe_tour_events(_HOME, 350) == 0
+
+
+@pytest.mark.asyncio
+async def test_decided_stop_anchors_tour_dedupe(repository, complete_event) -> None:
+    """An approved stop kills farther pending siblings even without an artist match."""
+    genre_score = ScoreResult(
+        score=34,
+        reasons=("genre match: metal, nu metal",),
+        affinity_score=15,
+        location_bonus=19,
+        distance_miles=7.0,
+    )
+
+    def stop(source_event_id: str, title: str, venue: str, lat: float, lon: float):
+        return _tour_stop(
+            complete_event,
+            source_event_id,
+            title,
+            venue,
+            artist="Motionless In White",
+            venue_latitude=lat,
+            venue_longitude=lon,
+        )
+
+    local = stop("miw-pgh", "MIW: Sweat and Blood", "PPG Paints Arena", 40.44, -79.99)
+    indy = stop("miw-indy", "MIW: Sweat and Blood Indy", "Everwise Amphitheater", 39.76, -86.16)
+    raleigh = stop("miw-ral", "MIW: Sweat and Blood Raleigh", "Lenovo Center", 35.80, -78.72)
+    second_night = stop("miw-pgh-2", "MIW Night Two", "PPG Paints Arena", 40.44, -79.99)
+    approved = (await repository.upsert_discovered(local, genre_score)).event
+    for candidate in (indy, raleigh, second_night):
+        await repository.upsert_discovered(candidate, genre_score)
+    await repository.approve(approved.id, 4)
+
+    removed = await repository.dedupe_tour_events(_HOME, 350)
+
+    assert removed == 2
+    remaining = {
+        event.title for event in await repository.list_events(EventStatus.PENDING_REVIEW)
+    }
+    # The farther tour stops are gone; the same-venue second night survives.
+    assert remaining == {"MIW Night Two"}
 
 
 @pytest.mark.asyncio
