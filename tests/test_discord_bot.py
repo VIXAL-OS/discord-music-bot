@@ -128,6 +128,28 @@ async def test_sync_event_review_edits_when_card_changed() -> None:
         await bot.close()
 
 
+def test_orphan_card_detection() -> None:
+    from music_event_bot.discord.bot import message_is_orphan_card
+
+    registered = frozenset({111})
+    footer = SimpleNamespace(
+        text="[music-event-id:5297f194-d427-4ae8-9884-a5cd1e6ce5ec] • score 90/100"
+    )
+    card_embed = SimpleNamespace(footer=footer)
+
+    canonical = SimpleNamespace(id=111, author=SimpleNamespace(id=42), embeds=[card_embed])
+    orphan = SimpleNamespace(id=222, author=SimpleNamespace(id=42), embeds=[card_embed])
+    other_author = SimpleNamespace(id=333, author=SimpleNamespace(id=7), embeds=[card_embed])
+    chatter = SimpleNamespace(
+        id=444, author=SimpleNamespace(id=42), embeds=[SimpleNamespace(footer=None)]
+    )
+
+    assert not message_is_orphan_card(canonical, 42, registered)  # type: ignore[arg-type]
+    assert message_is_orphan_card(orphan, 42, registered)  # type: ignore[arg-type]
+    assert not message_is_orphan_card(other_author, 42, registered)  # type: ignore[arg-type]
+    assert not message_is_orphan_card(chatter, 42, registered)  # type: ignore[arg-type]
+
+
 def test_full_description_is_kept_and_score_is_reviewer_only() -> None:
     description = "Doors 7 PM\n\nBag policy: small bags only.\n\nRain or shine."
     record = _record(description=description, artists=("Headliner",))

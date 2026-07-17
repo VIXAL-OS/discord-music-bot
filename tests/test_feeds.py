@@ -8,6 +8,60 @@ import respx
 
 from music_event_bot.discovery.feeds import CalendarSource, FeedSource
 
+_THUNDERBIRD_SUMMARY = (
+    "Angela Autumn &#160; Thursday, December 10, 2026Thunderbird Music Hall"
+    "4053 Butler Street, Pittsburgh, PADoors @ 7:00 PMShow @ 8:00 PM"
+    "AGE RESTRICTION: 18+ or with legal guardian "
+    "Angela Autumn is a country folk artist releasing &#8220;Cowboy Jack Clementine&#8221; (2023)."
+)
+
+
+@pytest.mark.asyncio
+async def test_venue_newsletter_entries_are_cleaned_and_completed(discovery_window) -> None:
+    from music_event_bot.discovery.feeds import FeedSource
+
+    entry = {
+        "title": "Angela Autumn",
+        "id": "https://thunderbirdmusichall.com/?p=1",
+        "link": "https://thunderbirdmusichall.com/event/angela-autumn/",
+        "summary": _THUNDERBIRD_SUMMARY,
+    }
+    feed_url = "https://thunderbirdmusichall.com/shows/feed/"
+    source = FeedSource((feed_url,))
+    event = source._parse_entry(entry, feed_url, discovery_window)
+
+    assert event is not None
+    assert event.venue == "Thunderbird Music Hall"
+    assert event.location == "4053 Butler Street, Pittsburgh, PA"
+    assert event.starts_at is not None
+    assert (event.starts_at.year, event.starts_at.month, event.starts_at.day) == (2026, 12, 10)
+    assert (event.starts_at.hour, event.starts_at.minute) == (20, 0)
+    assert event.incomplete_reasons == ()
+    # Entities decoded, section breaks restored, nothing left HTML-escaped.
+    assert event.description is not None
+    assert "&#160;" not in event.description
+    assert "“Cowboy Jack Clementine”" in event.description
+    assert "\nDoors @ 7:00 PM" in event.description
+
+
+@pytest.mark.asyncio
+async def test_prose_extraction_leaves_truly_incomplete_entries_alone(
+    discovery_window,
+) -> None:
+    from music_event_bot.discovery.feeds import FeedSource
+
+    entry = {
+        "title": "Mystery Announcement",
+        "id": "https://venue.example/?p=2",
+        "summary": "Something wicked this way comes. Stay tuned.",
+    }
+    source = FeedSource(("https://venue.example/feed/",))
+    event = source._parse_entry(entry, "https://venue.example/feed/", discovery_window)
+    assert event is not None
+    assert event.starts_at is None
+    assert event.venue is None
+    assert "feed entry has no structured event start time" in event.incomplete_reasons
+
 
 @pytest.mark.asyncio
 async def test_calendar_source_reads_local_files(discovery_window, tmp_path: Path) -> None:

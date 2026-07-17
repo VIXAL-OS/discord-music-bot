@@ -380,6 +380,14 @@ class EventRepository:
             )
             return [_event_from_row(row) for row in await cursor.fetchall()]
 
+    async def list_registered_review_message_ids(self) -> frozenset[int]:
+        """Message IDs of every canonical review card, regardless of status."""
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT review_message_id FROM reviews WHERE review_message_id IS NOT NULL"
+            )
+            return frozenset(int(row["review_message_id"]) for row in await cursor.fetchall())
+
     async def list_review_registrations(self) -> list[tuple[str, int, int]]:
         async with self.database.connect() as connection:
             cursor = await connection.execute(

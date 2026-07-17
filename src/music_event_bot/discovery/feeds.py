@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
+import re
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -145,6 +147,92 @@ class CalendarSource:
         )
 
 
+_HTML_BREAK_RE = re.compile(r"(?i)<\s*br\s*/?>|<\s*/(?:p|div|li|h[1-6]|tr)\s*>")
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_MONTHS = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+_EVENT_DATE_RE = re.compile(
+    r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s*"
+    rf"(?P<month>{'|'.join(_MONTHS)})\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?,?\s*(?P<year>\d{{4}})"
+)
+# Flattened venue-newsletter text: "..., 2026Thunderbird Music Hall4053 Butler
+# Street, Pittsburgh, PADoors @ 7pm..." — venue letters sit between the year
+# and the street number.
+_VENUE_ADDRESS_RE = re.compile(
+    r"\d{4}\s*(?P<venue>[A-Za-z][A-Za-z&'.\- ]{2,60}?)\s*"
+    r"(?P<address>\d{1,5}\s+[A-Za-z0-9.\- ]+"
+    r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Way|Drive|Dr|Lane|Ln)\.?,?\s*"
+    r"[A-Za-z.\- ]+,\s*[A-Z]{2}(?:\s*\d{5})?)"
+)
+_SHOW_TIME_RE = re.compile(
+    r"(?i)show\s*@\s*(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<half>[ap])\.?m?"
+)
+_DOORS_TIME_RE = re.compile(
+    r"(?i)doors\s*@\s*(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<half>[ap])\.?m?"
+)
+
+
+def _clean_feed_html(value: str) -> str:
+    """Turn feed HTML into readable text: entities decoded, breaks preserved."""
+    text = _HTML_BREAK_RE.sub("\n", value)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    # Feeds that flatten everything onto one line still get breaks at the
+    # obvious section boundaries.
+    for token in ("Doors @", "Show @", "AGE RESTRICTION", "Ticket Tier Info", "https://", "http://"):
+        text = text.replace(token, f"\n{token}")
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    collapsed: list[str] = []
+    for line in lines:
+        if line or (collapsed and collapsed[-1]):
+            collapsed.append(line)
+    return "\n".join(collapsed).strip()
+
+
+def _extract_start_from_text(text: str, window: DiscoveryWindow) -> datetime | None:
+    date_match = _EVENT_DATE_RE.search(text)
+    if not date_match:
+        return None
+    time_match = _SHOW_TIME_RE.search(text) or _DOORS_TIME_RE.search(text)
+    if not time_match:
+        return None
+    hour = int(time_match["hour"]) % 12
+    if time_match["half"].lower() == "p":
+        hour += 12
+    try:
+        return datetime(
+            int(date_match["year"]),
+            _MONTHS.index(date_match["month"]) + 1,
+            int(date_match["day"]),
+            hour,
+            int(time_match["minute"] or 0),
+            tzinfo=window.default_timezone,
+        )
+    except ValueError:
+        return None
+
+
+def _extract_venue_location_from_text(text: str) -> tuple[str | None, str | None]:
+    match = _VENUE_ADDRESS_RE.search(text)
+    if not match:
+        return None, None
+    venue = match["venue"].strip(" -&'.")
+    address = " ".join(match["address"].split())
+    return venue or None, address or None
+
+
 class FeedSource:
     name = "rss"
 
@@ -200,6 +288,27 @@ class FeedSource:
             part.strip() for part in str(genres_raw or "").split(",") if part.strip()
         )
 
+        raw_summary = entry.get("summary") or entry.get("description")
+        description = _clean_feed_html(str(raw_summary)) if raw_summary else None
+
+        # Venue newsletters (e.g. Thunderbird's WordPress feed) put the date,
+        # venue, address, and showtime in prose rather than structured fields.
+        # Recover them from the cleaned text before declaring the entry
+        # incomplete.
+        if description:
+            if starts_at is None:
+                starts_at = _extract_start_from_text(description, window)
+                if starts_at and ends_at is None:
+                    ends_at = starts_at + timedelta(
+                        minutes=window.default_event_duration_minutes
+                    )
+            if not venue or not location:
+                extracted_venue, extracted_address = _extract_venue_location_from_text(
+                    description
+                )
+                venue = venue or extracted_venue
+                location = location or extracted_address or venue
+
         incomplete: list[str] = []
         if starts_at is None:
             incomplete.append("feed entry has no structured event start time")
@@ -219,7 +328,7 @@ class FeedSource:
             timezone=str(starts_at.tzinfo) if starts_at else str(window.default_timezone),
             source_url=str(link) if link else feed_url,
             genres=genres,
-            description=entry.get("summary") or entry.get("description"),
+            description=description,
             raw={"feed_url": feed_url, "entry": dict(entry)},
             incomplete_reasons=tuple(incomplete),
         )

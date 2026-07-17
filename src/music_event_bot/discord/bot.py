@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 
 import discord
 from dateutil.parser import parse as parse_datetime
@@ -22,6 +23,29 @@ from music_event_bot.services.publishing import PublicationService
 from music_event_bot.services.scheduler import BotScheduler
 
 logger = logging.getLogger(__name__)
+
+
+_CARD_MARKER_RE = re.compile(r"\[music-event-id:[0-9a-fA-F-]{36}\]")
+
+
+def message_is_orphan_card(
+    message: discord.Message, bot_user_id: int, registered_message_ids: frozenset[int]
+) -> bool:
+    """True for bot-authored review cards whose event registration is gone.
+
+    Purging events deletes their reviews rows but cannot delete Discord
+    messages, so re-scrapes leave stale duplicate cards behind. Any card
+    carrying the event marker whose message ID is not the canonical one in
+    the reviews table is an orphan.
+    """
+    if message.author.id != bot_user_id:
+        return False
+    if message.id in registered_message_ids:
+        return False
+    return any(
+        embed.footer and embed.footer.text and _CARD_MARKER_RE.search(embed.footer.text)
+        for embed in message.embeds
+    )
 
 
 def review_card_hash(embed: discord.Embed, has_view: bool) -> str:
@@ -54,6 +78,7 @@ class MusicEventDiscordBot(commands.Bot):
         self.scheduler = BotScheduler(self.settings)
         self._ready_once = False
         self._sync_once = False
+        self._orphans_swept = False
         self._sync_complete = asyncio.Event()
         self._sync_error: Exception | None = None
         self._initial_cycle_task: asyncio.Task[None] | None = None
@@ -161,8 +186,28 @@ class MusicEventDiscordBot(commands.Bot):
             f"({self.settings.default_timezone})."
         )
 
+    async def _sweep_orphan_review_cards(self, channel: discord.TextChannel) -> int:
+        if self.user is None:
+            return 0
+        registered = await self.repository.list_registered_review_message_ids()
+        bot_user_id = self.user.id
+        deleted = await channel.purge(
+            limit=1000,
+            check=lambda message: message_is_orphan_card(message, bot_user_id, registered),
+            reason="Removing orphaned review cards for purged events",
+        )
+        return len(deleted)
+
     async def sync_reviews(self) -> int:
         channel = await self._review_channel()
+        if not self._orphans_swept:
+            self._orphans_swept = True
+            try:
+                removed = await self._sweep_orphan_review_cards(channel)
+                if removed:
+                    logger.info("Deleted %d orphaned review cards", removed)
+            except Exception:
+                logger.exception("Orphaned review card sweep failed")
         synced = 0
         new_posts = 0
         limit = self.settings.review_post_batch_size
