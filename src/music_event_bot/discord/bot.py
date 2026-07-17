@@ -5,6 +5,8 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import replace as dataclass_replace
+from datetime import UTC, datetime, timedelta
 
 import discord
 from dateutil.parser import parse as parse_datetime
@@ -26,6 +28,14 @@ logger = logging.getLogger(__name__)
 
 
 _CARD_MARKER_RE = re.compile(r"\[music-event-id:[0-9a-fA-F-]{36}\]")
+_URL_RE = re.compile(r"https?://\S+")
+
+# Statuses whose events belong in the review channel. Everything else has
+# been decided, so its card gets deleted (deletes are exempt from Discord's
+# hourly cap on editing old messages, unlike the final-edit approach).
+_REVIEWABLE_STATUSES = frozenset(
+    {EventStatus.PENDING_REVIEW, EventStatus.INCOMPLETE, EventStatus.PUBLISH_FAILED}
+)
 
 
 def message_is_orphan_card(
@@ -78,7 +88,6 @@ class MusicEventDiscordBot(commands.Bot):
         self.scheduler = BotScheduler(self.settings)
         self._ready_once = False
         self._sync_once = False
-        self._orphans_swept = False
         self._sync_complete = asyncio.Event()
         self._sync_error: Exception | None = None
         self._initial_cycle_task: asyncio.Task[None] | None = None
@@ -113,6 +122,7 @@ class MusicEventDiscordBot(commands.Bot):
             self.sync_reviews,
             self.repository.expire_past_events,
             self.drain_publication_queue,
+            self.remind_rsvps,
         )
         self.scheduler.start()
         self._initial_cycle_task = asyncio.create_task(self._initial_cycle())
@@ -200,20 +210,26 @@ class MusicEventDiscordBot(commands.Bot):
 
     async def sync_reviews(self) -> int:
         channel = await self._review_channel()
-        if not self._orphans_swept:
-            self._orphans_swept = True
-            try:
-                removed = await self._sweep_orphan_review_cards(channel)
+        try:
+            removed = await self._sweep_orphan_review_cards(channel)
+            if removed:
                 logger.info("Orphan card sweep removed %d messages", removed)
-            except Exception:
-                logger.exception("Orphaned review card sweep failed")
+        except Exception:
+            logger.exception("Orphaned review card sweep failed")
         synced = 0
         new_posts = 0
         edits = 0
         limit = self.settings.review_post_batch_size
+        # Decided events lose their cards first — deletes are uncapped, and
+        # clearing them shortens the channel before new cards land.
+        for event in await self.repository.list_departed_events_with_cards():
+            try:
+                if await self.sync_event_review(event.id, channel=channel) == "removed":
+                    synced += 1
+            except discord.HTTPException:
+                logger.exception("Failed removing decided card for %s", event.id)
         queue = await self.repository.list_review_queue()
-        departed = await self.repository.list_departed_events_with_cards()
-        for event in [*queue, *departed]:
+        for event in queue:
             message_id = await self.repository.get_review_message_id(event.id)
             if message_id is None:
                 if limit > 0 and new_posts >= limit:
@@ -251,12 +267,20 @@ class MusicEventDiscordBot(commands.Bot):
         if event is None:
             return None
         channel = channel or await self._review_channel()
-        view = (
-            EventReviewView(self, event_id)
-            if event.status
-            in {EventStatus.PENDING_REVIEW, EventStatus.INCOMPLETE, EventStatus.PUBLISH_FAILED}
-            else None
-        )
+        if event.status not in _REVIEWABLE_STATUSES:
+            # Decided (approved, published, rejected, expired): the card comes
+            # down entirely instead of getting a final edit.
+            message_id, _stored_hash = await self.repository.get_review_sync_state(event_id)
+            if message_id is None:
+                return None
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.delete()
+            except discord.NotFound:
+                pass
+            await self.repository.clear_review_message(event_id)
+            return "removed"
+        view = EventReviewView(self, event_id)
         nearby = await self.repository.find_nearby_venue_events(event)
         duplicates = tuple(
             f"{dup.title[:70]} — {dup.status.value} `{dup.id[:8]}`" for dup in nearby[:3]
@@ -283,6 +307,109 @@ class MusicEventDiscordBot(commands.Bot):
 
     async def refresh_review_message(self, event_id: str) -> None:
         await self.sync_event_review(event_id)
+
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot or self.user is None:
+            return
+        if message.guild is None or message.guild.id != self.settings.discord_guild_id:
+            return
+        if self.user not in message.mentions:
+            return
+        try:
+            await self._handle_event_request(message)
+        except Exception:
+            logger.exception("Failed handling an @mention event request")
+
+    async def _handle_event_request(self, message: discord.Message) -> None:
+        """Anyone can @mention the bot with a show and it becomes a review card.
+
+        This is the community's side door past the taste gate: the event skips
+        discovery scoring thresholds entirely and lands in the queue marked
+        with who asked for it.
+        """
+        assert self.user is not None
+        content = re.sub(rf"<@!?{self.user.id}>", " ", message.content)
+        url_match = _URL_RE.search(content)
+        url = url_match.group(0).rstrip(">),.") if url_match else None
+        title = " ".join(_URL_RE.sub(" ", content).split()).strip(" -–—:,")
+        if not title and not url:
+            await message.reply(
+                "Tell me what to add — `@" + self.user.name + " <artist or event,"
+                " plus a link if you have one>` and I'll queue a review card.",
+                mention_author=False,
+            )
+            return
+        candidate = manual_event(
+            title=title or url or "Untitled request",
+            starts_at=None,
+            venue=None,
+            location=None,
+            source_url=url,
+            duration_minutes=self.settings.default_event_duration_minutes,
+            submitted_by=message.author.id,
+            source_name="request",
+        )
+        score = score_event(
+            candidate,
+            self.music_app.profile,
+            home=self.settings.home_point,
+            max_travel_radius_miles=self.settings.max_travel_radius_miles,
+        )
+        score = dataclass_replace(
+            score, reasons=(*score.reasons, f"requested by {message.author.display_name}")
+        )
+        result = await self.repository.upsert_discovered(candidate, score)
+        await self.sync_event_review(result.event.id)
+        note = (
+            ""
+            if result.event.is_complete
+            else " I couldn't work out the date or venue from that, so it may need"
+            " an edit before it can be approved."
+        )
+        await message.reply(
+            f"Got it — **{result.event.title}** is in the review queue.{note}",
+            mention_author=False,
+        )
+
+    async def remind_rsvps(self) -> int:
+        """Ping Going/Interested RSVPs roughly a day before their event."""
+        now = datetime.now(UTC)
+        due = await self.repository.list_events_needing_reminder(
+            now, now + timedelta(hours=25)
+        )
+        sent = 0
+        for event, user_ids in due:
+            if not user_ids or event.starts_at is None:
+                # Nothing to ping; mark it so it never re-qualifies.
+                await self.repository.mark_reminder_sent(event.id)
+                continue
+            publication = await self.repository.get_publication(event.id)
+            channel_id = self.settings.announcement_channel_id
+            if publication is None or channel_id is None:
+                await self.repository.mark_reminder_sent(event.id)
+                continue
+            channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            when = f"<t:{int(event.starts_at.timestamp())}:t>"
+            venue = f" at {event.venue}" if event.venue else ""
+            header = f"⏰ Tomorrow: **{event.title}**{venue}, {when}"
+            announcement_id = publication.get("announcement_message_id")
+            if announcement_id:
+                header += (
+                    f"\nhttps://discord.com/channels/{self.settings.discord_guild_id}"
+                    f"/{channel_id}/{announcement_id}"
+                )
+            mentions = [f"<@{user_id}>" for user_id in user_ids]
+            await channel.send(
+                header + "\n" + " ".join(mentions)[:1800],
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+            await self.repository.mark_reminder_sent(event.id)
+            sent += 1
+        if sent:
+            logger.info("Sent %d event-tomorrow RSVP reminders", sent)
+        return sent
 
     async def _review_channel(self) -> discord.TextChannel:
         channel_id = self.settings.review_channel_id

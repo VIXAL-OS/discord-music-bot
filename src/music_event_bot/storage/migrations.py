@@ -154,6 +154,12 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        7,
+        """
+        ALTER TABLE publications ADD COLUMN reminder_sent_at TEXT;
+        """,
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

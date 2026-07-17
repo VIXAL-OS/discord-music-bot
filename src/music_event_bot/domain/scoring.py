@@ -4,6 +4,20 @@ from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.models import DiscoveredEvent, EventRecord, ScoreResult, TasteProfile
 from music_event_bot.domain.normalization import normalize_genre, normalize_text
 
+# Words that mark a title as an homage rather than the artist themselves.
+# Only consulted for title-fallback matches; exact lineup matches are trusted.
+_TRIBUTE_MARKERS = (
+    "tribute",
+    "experience",
+    "plays ",
+    "the music of",
+    "celebration of",
+    "songs of",
+    "revue",
+    "revisited",
+)
+_LOCAL_TRIBUTE_MILES = 40
+
 
 def score_event(
     event: DiscoveredEvent | EventRecord,
@@ -20,6 +34,21 @@ def score_event(
     affinity_score = 0
     reasons: list[str] = []
 
+    # Distance is computed first so tribute demotion can reason about it.
+    location_bonus = 0
+    distance_miles: float | None = None
+    if (
+        home is not None
+        and event.venue_latitude is not None
+        and event.venue_longitude is not None
+        and max_travel_radius_miles > 0
+    ):
+        venue_point = GeoPoint(event.venue_latitude, event.venue_longitude)
+        distance_miles = haversine_miles(home, venue_point)
+        if distance_miles <= max_travel_radius_miles:
+            remaining = max(0.0, 1 - distance_miles / max_travel_radius_miles)
+            location_bonus = round(20 * remaining**2)
+
     # Prefer exact matching against the structured lineup (every act on the
     # bill). Fall back to word-boundary title matching only when the source
     # provided no lineup — title text also names other bands and marketing
@@ -27,21 +56,28 @@ def score_event(
     event_artists = {normalize_text(name) for name in event.artists}
     event_artists.discard("")
     title_padded = f" {title} "
+    title_is_tribute = any(marker in title for marker in _TRIBUTE_MARKERS)
     for preferred in profile.artists:
         preferred_normalized = normalize_text(preferred)
         if not preferred_normalized:
             continue
-        if (
-            preferred_normalized == artist
-            or preferred_normalized in event_artists
-            or (
-                not event_artists
-                and f" {preferred_normalized} " in title_padded
+        exact = preferred_normalized == artist or preferred_normalized in event_artists
+        via_title = not event_artists and f" {preferred_normalized} " in title_padded
+        if not exact and not via_title:
+            continue
+        if via_title and title_is_tribute:
+            # "STRANGELOVE - The Depeche Mode Experience" is not Depeche
+            # Mode. A local tribute night can still reach review; a distant
+            # one cannot pass the gate on this evidence alone.
+            local = distance_miles is not None and distance_miles <= _LOCAL_TRIBUTE_MILES
+            affinity_score += 25 if local else 10
+            reasons.append(
+                f"possible tribute: {preferred}" + (" (local)" if local else "")
             )
-        ):
+        else:
             affinity_score += 60
             reasons.append(f"artist match: {preferred}")
-            break
+        break
 
     # One match per normalized genre, so alias spellings ("alt rock",
     # "alternative", "alternative rock") cannot stack.
@@ -78,24 +114,10 @@ def score_event(
             reasons.append(f"venue match: {preferred}")
             break
 
-    location_bonus = 0
-    distance_miles: float | None = None
-    if (
-        home is not None
-        and event.venue_latitude is not None
-        and event.venue_longitude is not None
-        and max_travel_radius_miles > 0
-    ):
-        venue_point = GeoPoint(event.venue_latitude, event.venue_longitude)
-        distance_miles = haversine_miles(home, venue_point)
-        if distance_miles <= max_travel_radius_miles:
-            remaining = max(0.0, 1 - distance_miles / max_travel_radius_miles)
-            location_bonus = round(20 * remaining**2)
-            if location_bonus:
-                reasons.append(
-                    f"distance preference: +{location_bonus} "
-                    f"({distance_miles:.0f} mi from home)"
-                )
+    if location_bonus and distance_miles is not None:
+        reasons.append(
+            f"distance preference: +{location_bonus} ({distance_miles:.0f} mi from home)"
+        )
 
     return ScoreResult(
         score=min(affinity_score + location_bonus, 100),

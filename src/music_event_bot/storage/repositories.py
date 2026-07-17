@@ -7,7 +7,7 @@ from typing import Any
 
 import aiosqlite
 
-from music_event_bot.domain.geography import GeoPoint
+from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.models import (
     DiscoveredEvent,
     EventRecord,
@@ -379,6 +379,142 @@ class EventRepository:
                 """
             )
             return [_event_from_row(row) for row in await cursor.fetchall()]
+
+    async def dedupe_tour_events(self, home: GeoPoint, max_radius_miles: int) -> int:
+        """Keep only the closest undecided stop of each matched artist's tour.
+
+        Events sharing an "artist match: X" reason are the same tour seen in
+        several cities; only the stop nearest home needs review. Events
+        without coordinates count as farthest. Decided events (approved,
+        published, rejected) are never touched.
+        """
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT * FROM events WHERE status IN ('discovered', 'pending_review')"
+            )
+            events = [_event_from_row(row) for row in await cursor.fetchall()]
+        by_artist: dict[str, list[EventRecord]] = {}
+        for event in events:
+            for reason in event.match_reasons:
+                if reason.startswith("artist match: "):
+                    key = normalize_text(reason[len("artist match: ") :])
+                    if key:
+                        by_artist.setdefault(key, []).append(event)
+                    break
+        to_delete: list[str] = []
+        for siblings in by_artist.values():
+            if len(siblings) < 2:
+                continue
+
+            def sort_key(record: EventRecord) -> tuple[float, str]:
+                if record.venue_latitude is None or record.venue_longitude is None:
+                    distance = float(max_radius_miles) * 10
+                else:
+                    distance = haversine_miles(
+                        home, GeoPoint(record.venue_latitude, record.venue_longitude)
+                    )
+                return distance, record.starts_at.isoformat() if record.starts_at else "~"
+
+            ordered = sorted(siblings, key=sort_key)
+            to_delete.extend(record.id for record in ordered[1:])
+        if to_delete:
+            async with self.database.connect() as connection:
+                await connection.execute("PRAGMA foreign_keys = ON")
+                placeholders = ",".join("?" for _ in to_delete)
+                await connection.execute(
+                    f"DELETE FROM events WHERE id IN ({placeholders})", to_delete
+                )
+                await connection.commit()
+        return len(to_delete)
+
+    async def published_with_closer_pending(self, home: GeoPoint) -> list[tuple[str, str]]:
+        """Published events for which a strictly closer same-artist stop exists."""
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT * FROM events WHERE status IN "
+                "('published', 'approved', 'pending_review', 'discovered')"
+            )
+            events = [_event_from_row(row) for row in await cursor.fetchall()]
+
+        def distance(record: EventRecord) -> float | None:
+            if record.venue_latitude is None or record.venue_longitude is None:
+                return None
+            return haversine_miles(
+                home, GeoPoint(record.venue_latitude, record.venue_longitude)
+            )
+
+        by_artist: dict[str, list[EventRecord]] = {}
+        for event in events:
+            for reason in event.match_reasons:
+                if reason.startswith("artist match: "):
+                    key = normalize_text(reason[len("artist match: ") :])
+                    if key:
+                        by_artist.setdefault(key, []).append(event)
+                    break
+        flagged: list[tuple[str, str]] = []
+        for siblings in by_artist.values():
+            published = [e for e in siblings if e.status is EventStatus.PUBLISHED]
+            others = [e for e in siblings if e.status is not EventStatus.PUBLISHED]
+            for pub in published:
+                pub_distance = distance(pub)
+                if pub_distance is None:
+                    continue
+                closer = [
+                    (other_distance, other)
+                    for other in others
+                    if (other_distance := distance(other)) is not None
+                    and other_distance < pub_distance - 1
+                ]
+                if closer:
+                    flagged.append((pub.title, min(closer)[1].title))
+        return flagged
+
+    async def clear_review_message(self, event_id: str) -> None:
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            await connection.execute(
+                "UPDATE reviews SET review_message_id = NULL, card_hash = NULL, "
+                "updated_at = ? WHERE event_id = ?",
+                (now, event_id),
+            )
+            await connection.commit()
+
+    async def list_events_needing_reminder(
+        self, window_start: datetime, window_end: datetime
+    ) -> list[tuple[EventRecord, list[int]]]:
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT e.* FROM events e JOIN publications p ON p.event_id = e.id
+                WHERE e.status = 'published' AND p.reminder_sent_at IS NULL
+                  AND e.starts_at IS NOT NULL
+                  AND datetime(e.starts_at) BETWEEN datetime(?) AND datetime(?)
+                """,
+                (
+                    window_start.astimezone(UTC).isoformat(),
+                    window_end.astimezone(UTC).isoformat(),
+                ),
+            )
+            events = [_event_from_row(row) for row in await cursor.fetchall()]
+            results: list[tuple[EventRecord, list[int]]] = []
+            for event in events:
+                cursor = await connection.execute(
+                    "SELECT user_id FROM rsvps WHERE event_id = ? "
+                    "AND state IN ('going', 'interested')",
+                    (event.id,),
+                )
+                users = [int(row["user_id"]) for row in await cursor.fetchall()]
+                results.append((event, users))
+            return results
+
+    async def mark_reminder_sent(self, event_id: str) -> None:
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            await connection.execute(
+                "UPDATE publications SET reminder_sent_at = ? WHERE event_id = ?",
+                (now, event_id),
+            )
+            await connection.commit()
 
     async def find_nearby_venue_events(
         self, event: EventRecord, hours: int = 6

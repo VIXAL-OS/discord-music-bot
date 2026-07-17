@@ -87,7 +87,9 @@ class EventReviewView(discord.ui.View):
             await self.bot.refresh_review_message(self.event_id)
             return
         await interaction.followup.send(self.bot.queue_note(event), ephemeral=True)
-        await interaction.message.edit(embed=review_embed(event), view=None)
+        # Deleting the card (not editing it) keeps decisions immune to
+        # Discord's hourly cap on edits to old messages (error 30046).
+        await self.bot.refresh_review_message(self.event_id)
 
     async def _retry(self, interaction: discord.Interaction) -> None:
         if not await require_reviewer(interaction, self.bot.settings):
@@ -95,12 +97,12 @@ class EventReviewView(discord.ui.View):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             await self.bot.repository.approve(self.event_id, interaction.user.id)
-            event = await self.bot.publication_service.publish(self.event_id)
+            await self.bot.publication_service.publish(self.event_id)
         except Exception as exc:
             await interaction.followup.send(f"Retry failed: {exc}", ephemeral=True)
             return
         await interaction.followup.send("Publication retry succeeded.", ephemeral=True)
-        await interaction.message.edit(embed=review_embed(event), view=None)
+        await self.bot.refresh_review_message(self.event_id)
 
     async def _edit(self, interaction: discord.Interaction) -> None:
         if not await require_reviewer(interaction, self.bot.settings):
@@ -223,7 +225,5 @@ class RejectEventModal(discord.ui.Modal):
             interaction.user.id,
             str(self.reason.value).strip() or None,
         )
-        event = await self.bot.repository.get_event(self.event_id)
         await interaction.response.send_message("Event rejected.", ephemeral=True)
-        if event and interaction.message:
-            await interaction.message.edit(embed=review_embed(event), view=None)
+        await self.bot.refresh_review_message(self.event_id)

@@ -18,6 +18,7 @@ def manual_event(
     description: str | None = None,
     duration_minutes: int = 180,
     submitted_by: int | None = None,
+    source_name: str = "manual",
 ) -> DiscoveredEvent:
     if starts_at is not None and starts_at.tzinfo is None:
         raise ValueError("Manual event start time must be timezone-aware")
@@ -29,7 +30,7 @@ def manual_event(
     if not location:
         incomplete.append("missing location")
     return DiscoveredEvent(
-        source_name="manual",
+        source_name=source_name,
         source_event_id=str(uuid.uuid4()),
         title=title.strip() or "Untitled event",
         artist=artist,

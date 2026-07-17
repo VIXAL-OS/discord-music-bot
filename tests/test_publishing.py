@@ -248,6 +248,53 @@ async def test_fallback_role_used_when_nothing_specific_matches(
 
 
 @pytest.mark.asyncio
+async def test_artist_tags_vote_for_roles_when_genres_miss(
+    repository, complete_event
+) -> None:
+    from dataclasses import replace
+
+    # The source supplied no usable genre labels, but the lineup's cached
+    # tags still identify the right community role.
+    unlabeled = replace(
+        complete_event, genres=(), artist="The Body", artists=("The Body", "Dis Fig")
+    )
+    event = await _approved_event(repository, unlabeled)
+    await repository.seed_genre_roles({"metal": 5, "other music": 99})
+    await repository.store_artist_tags(
+        "the body", [("sludge metal", 100), ("doom metal", 80)]
+    )
+    await repository.store_tag_mappings(
+        {
+            "sludge metal": (("metal",), ("metal",)),
+            "doom metal": (("metal",), ("metal",)),
+        },
+        "test-model",
+    )
+    gateway = FakePublicationGateway()
+    service = PublicationService(repository, gateway, fallback_role_ids=frozenset({99}))
+
+    await service.publish(event.id)
+    assert gateway.announcement_calls == [(event.id, (5,), 7001)]
+
+
+@pytest.mark.asyncio
+async def test_catchall_pinged_when_nothing_matches_at_all(
+    repository, complete_event
+) -> None:
+    from dataclasses import replace
+
+    mystery = replace(complete_event, genres=(), artists=())
+    event = await _approved_event(repository, mystery)
+    gateway = FakePublicationGateway()
+    service = PublicationService(repository, gateway, fallback_role_ids=frozenset({99}))
+
+    await service.publish(event.id)
+    # Publishing silently was the old behavior; the catch-all role now hears
+    # about events no mapping recognizes.
+    assert gateway.announcement_calls == [(event.id, (99,), 7001)]
+
+
+@pytest.mark.asyncio
 async def test_publish_records_success_and_reuses_existing_external_resources(
     repository, complete_event
 ) -> None:

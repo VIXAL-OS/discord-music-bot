@@ -8,6 +8,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from music_event_bot.domain.models import EventRecord, EventStatus
+from music_event_bot.domain.normalization import normalize_text
 from music_event_bot.storage.repositories import EventRepository
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,31 @@ class PublicationService:
     async def _roles_for(self, event: EventRecord) -> tuple[int, ...]:
         roles = await self.repository.get_roles_for_genres(event.genres)
         specific = tuple(role for role in roles if role not in self.fallback_role_ids)
-        return specific or roles
+        if specific:
+            return specific
+        # The source's genre labels matched no mapped role. Before settling
+        # for the catch-all, let the lineup's cached artist tags vote for
+        # genre buckets the same way discovery scoring does.
+        artists = {normalize_text(name) for name in (*event.artists, event.artist or "")}
+        artists.discard("")
+        if artists:
+            tags = await self.repository.get_tags_for_artists(artists)
+            if tags:
+                mappings = await self.repository.get_tag_mappings(tags)
+                buckets = tuple(
+                    bucket for bucket_list, _broad in mappings.values() for bucket in bucket_list
+                )
+                bucket_roles = await self.repository.get_roles_for_genres(buckets)
+                bucket_specific = tuple(
+                    role for role in bucket_roles if role not in self.fallback_role_ids
+                )
+                if bucket_specific:
+                    return bucket_specific
+        if roles:
+            return roles
+        # Nothing matched anywhere: ping the catch-all communities rather
+        # than publishing silently.
+        return tuple(sorted(self.fallback_role_ids))
 
     async def publish(self, event_id: str) -> EventRecord:
         async with self._locks[event_id]:

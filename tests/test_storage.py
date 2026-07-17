@@ -81,7 +81,7 @@ async def test_migrates_existing_schema_one_database_to_two(tmp_path) -> None:
         )
         await connection.commit()
 
-    assert await database.initialize() == 6
+    assert await database.initialize() == LATEST_SCHEMA_VERSION
     async with database.connect() as connection:
         cursor = await connection.execute("PRAGMA table_info(events)")
         columns = {row["name"] for row in await cursor.fetchall()}
@@ -231,3 +231,144 @@ async def test_backfills_ticketmaster_coordinates_and_rescores(
     assert stored.venue_longitude == -79.9959
     assert stored.score == 80
     assert "distance preference: +20" in stored.match_reasons[-1]
+
+
+_HOME = GeoPoint(40.44, -79.99)  # Pittsburgh
+_ARTIST_MATCH_SCORE = ScoreResult(
+    score=60,
+    reasons=("artist match: Man Man",),
+    affinity_score=60,
+    location_bonus=0,
+    distance_miles=None,
+)
+
+
+def _tour_stop(complete_event, source_event_id: str, title: str, venue: str, **coords):
+    return replace(
+        complete_event,
+        source_event_id=source_event_id,
+        title=title,
+        venue=venue,
+        **coords,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tour_dedupe_keeps_only_the_closest_pending_stop(
+    repository, complete_event
+) -> None:
+    near = _tour_stop(
+        complete_event,
+        "tour-pgh",
+        "Man Man at Mr Smalls",
+        "Mr Smalls Theatre",
+        venue_latitude=40.50,
+        venue_longitude=-79.96,
+    )
+    far = _tour_stop(
+        complete_event,
+        "tour-cle",
+        "Man Man at Grog Shop",
+        "Grog Shop",
+        venue_latitude=41.50,
+        venue_longitude=-81.58,
+    )
+    coordless = _tour_stop(
+        complete_event, "tour-tbd", "Man Man somewhere", "TBD Hall"
+    )
+    unrelated = _tour_stop(
+        complete_event,
+        "solo-1",
+        "A Different Band",
+        "Elsewhere",
+        venue_latitude=40.45,
+        venue_longitude=-79.99,
+    )
+    for candidate in (near, far, coordless):
+        await repository.upsert_discovered(candidate, _ARTIST_MATCH_SCORE)
+    await repository.upsert_discovered(
+        unrelated,
+        ScoreResult(
+            score=30,
+            reasons=("genre match: grindcore",),
+            affinity_score=30,
+            location_bonus=0,
+            distance_miles=None,
+        ),
+    )
+
+    removed = await repository.dedupe_tour_events(_HOME, 350)
+
+    assert removed == 2
+    remaining = {
+        event.title for event in await repository.list_events(EventStatus.PENDING_REVIEW)
+    }
+    assert remaining == {"Man Man at Mr Smalls", "A Different Band"}
+    # Idempotent: a second pass finds nothing left to trim.
+    assert await repository.dedupe_tour_events(_HOME, 350) == 0
+
+
+@pytest.mark.asyncio
+async def test_published_with_closer_pending_flags_the_mistake(
+    repository, complete_event
+) -> None:
+    far = _tour_stop(
+        complete_event,
+        "pub-cle",
+        "Man Man at Grog Shop",
+        "Grog Shop",
+        venue_latitude=41.50,
+        venue_longitude=-81.58,
+    )
+    near = _tour_stop(
+        complete_event,
+        "pend-pgh",
+        "Man Man at Mr Smalls",
+        "Mr Smalls Theatre",
+        venue_latitude=40.50,
+        venue_longitude=-79.96,
+    )
+    published = (await repository.upsert_discovered(far, _ARTIST_MATCH_SCORE)).event
+    await repository.upsert_discovered(near, _ARTIST_MATCH_SCORE)
+    async with repository.database.connect() as connection:
+        await connection.execute(
+            "UPDATE events SET status = 'published' WHERE id = ?", (published.id,)
+        )
+        await connection.commit()
+
+    flagged = await repository.published_with_closer_pending(_HOME)
+    assert flagged == [("Man Man at Grog Shop", "Man Man at Mr Smalls")]
+    # The published stop is never deleted by tour dedupe, and the single
+    # remaining pending stop has no sibling to trim.
+    assert await repository.dedupe_tour_events(_HOME, 350) == 0
+
+
+@pytest.mark.asyncio
+async def test_rsvp_reminder_queries(repository, complete_event) -> None:
+    from datetime import UTC, datetime
+
+    starts_at = datetime.now(UTC) + timedelta(hours=20)
+    soon = replace(complete_event, starts_at=starts_at, ends_at=starts_at + timedelta(hours=3))
+    event = (await repository.upsert_discovered(soon, _ARTIST_MATCH_SCORE)).event
+    await repository.upsert_rsvp(event.id, 42, "casey", "going")
+    await repository.upsert_rsvp(event.id, 43, "sam", "interested")
+    await repository.upsert_rsvp(event.id, 44, "kit", "declined")
+    async with repository.database.connect() as connection:
+        await connection.execute(
+            "UPDATE events SET status = 'published' WHERE id = ?", (event.id,)
+        )
+        await connection.execute(
+            "INSERT INTO publications(event_id, state, updated_at) VALUES (?, ?, ?)",
+            (event.id, "published", datetime.now(UTC).isoformat()),
+        )
+        await connection.commit()
+
+    now = datetime.now(UTC)
+    due = await repository.list_events_needing_reminder(now, now + timedelta(hours=25))
+    assert len(due) == 1
+    due_event, user_ids = due[0]
+    assert due_event.id == event.id
+    assert sorted(user_ids) == [42, 43]  # declined users are not pinged
+
+    await repository.mark_reminder_sent(event.id)
+    assert await repository.list_events_needing_reminder(now, now + timedelta(hours=25)) == []

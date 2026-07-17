@@ -43,6 +43,7 @@ class _ReviewRepoStub:
         self.record = record
         self.stored_hash = stored_hash
         self.saved: list[tuple[str, int, int, str | None]] = []
+        self.cleared: list[str] = []
 
     async def get_event(self, event_id: str) -> EventRecord:
         return self.record
@@ -57,6 +58,9 @@ class _ReviewRepoStub:
         self, event_id: str, channel_id: int, message_id: int, card_hash: str | None = None
     ) -> None:
         self.saved.append((event_id, channel_id, message_id, card_hash))
+
+    async def clear_review_message(self, event_id: str) -> None:
+        self.cleared.append(event_id)
 
 
 def _review_bot(repo: _ReviewRepoStub) -> MusicEventDiscordBot:
@@ -129,6 +133,37 @@ async def test_sync_event_review_edits_when_card_changed() -> None:
         assert repo.saved[0][3] is not None  # the fresh card hash was stored
     finally:
         await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_decided_event_card_is_deleted_not_edited() -> None:
+    record = _record(status=EventStatus.REJECTED)
+    repo = _ReviewRepoStub(record, stored_hash="whatever")
+    bot = _review_bot(repo)
+    deleted: list[int] = []
+
+    async def delete() -> None:
+        deleted.append(111)
+
+    async def fail_edit(**kwargs: Any) -> None:
+        raise AssertionError("decided cards are deleted, never edited")
+
+    message = SimpleNamespace(id=111, delete=delete, edit=fail_edit)
+
+    async def fetch_message(message_id: int) -> SimpleNamespace:
+        assert message_id == 111
+        return message
+
+    channel = SimpleNamespace(id=2, fetch_message=fetch_message)
+    try:
+        result = await bot.sync_event_review(record.id, channel=channel)  # type: ignore[arg-type]
+    finally:
+        await bot.close()
+
+    assert result == "removed"
+    assert deleted == [111]
+    assert repo.cleared == ["e1"]
+    assert repo.saved == []
 
 
 def test_orphan_card_detection() -> None:

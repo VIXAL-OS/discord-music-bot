@@ -68,7 +68,7 @@ class DiscoveryOrchestrator:
             diagnostics = getattr(source, "last_diagnostics", None)
             if diagnostics:
                 source_diagnostics[source.name] = diagnostics
-            requires_affinity = getattr(source, "requires_affinity", False)
+            curated = not getattr(source, "requires_affinity", False)
             trusted_venues = self.settings.trusted_venue_fragments
             for event in source_events:
                 score = score_event(
@@ -77,10 +77,10 @@ class DiscoveryOrchestrator:
                     home=self.settings.home_point,
                     max_travel_radius_miles=self.settings.max_travel_radius_miles,
                 )
-                below_gate = (
-                    requires_affinity
-                    and score.affinity_score < self.settings.minimum_affinity_score
-                )
+                # Every automated source passes the taste gate — curated feeds
+                # included. Manual submissions and @mention requests reach
+                # review directly without going through discovery.
+                below_gate = score.affinity_score < self.settings.minimum_affinity_score
                 venue_trusted = below_gate and _is_trusted_venue(event.venue, trusted_venues)
                 if (below_gate and not venue_trusted) or (
                     score.score < self.settings.minimum_match_score
@@ -91,15 +91,28 @@ class DiscoveryOrchestrator:
                     score = replace(
                         score, reasons=(*score.reasons, f"trusted venue: {event.venue}")
                     )
-                elif not requires_affinity:
-                    # Trusted feeds bypass the affinity gate; say so on the
-                    # review card instead of leaving "Why it matched" empty.
+                elif curated:
                     score = replace(
                         score, reasons=(*score.reasons, f"curated source: {source.name}")
                     )
                 result = await self.repository.upsert_discovered(event, score)
                 created += int(result.created)
                 sources_added += int(result.source_created)
+
+        deduped = await self.repository.dedupe_tour_events(
+            self.settings.home_point, self.settings.max_travel_radius_miles
+        )
+        if deduped:
+            logger.info("Tour dedupe removed %d farther sibling events", deduped)
+        closer_pending = await self.repository.published_with_closer_pending(
+            self.settings.home_point
+        )
+        for published_title, closer_title in closer_pending:
+            logger.warning(
+                "Published event %r has a closer unpublished sibling %r",
+                published_title,
+                closer_title,
+            )
 
         summary = DiscoverySummary(
             discovered=discovered,

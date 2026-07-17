@@ -53,6 +53,12 @@ class RecordingRepository:
     async def record_job_run(self, *args: Any, **kwargs: Any) -> None:
         return None
 
+    async def dedupe_tour_events(self, *args: Any) -> int:
+        return 0
+
+    async def published_with_closer_pending(self, *args: Any) -> list[tuple[str, str]]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_trusted_venue_bypasses_affinity_gate(complete_event) -> None:
@@ -92,10 +98,7 @@ async def test_trusted_venue_bypasses_affinity_gate(complete_event) -> None:
 async def test_orchestrator_uses_one_to_180_day_window() -> None:
     settings = Settings(_env_file=None)
     source = CapturingSource()
-    repository = cast(
-        EventRepository,
-        SimpleNamespace(record_job_run=lambda *args, **kwargs: _completed()),
-    )
+    repository = cast(EventRepository, RecordingRepository())
     orchestrator = DiscoveryOrchestrator(settings, repository, [source], TasteProfile())
 
     before = datetime.now(settings.timezone)
@@ -108,7 +111,8 @@ async def test_orchestrator_uses_one_to_180_day_window() -> None:
 
 
 @pytest.mark.asyncio
-async def test_affinity_gate_applies_only_to_opted_in_sources() -> None:
+async def test_affinity_gate_applies_to_every_source() -> None:
+    """Curated feeds are gated too; only taste-matching events get through."""
     settings = Settings(_env_file=None)
     unrelated = DiscoveredEvent(
         source_name="fixture-feed",
@@ -117,39 +121,29 @@ async def test_affinity_gate_applies_only_to_opted_in_sources() -> None:
         venue_latitude=settings.home_point.latitude,
         venue_longitude=settings.home_point.longitude,
     )
-
-    feed_repository = RecordingRepository()
-    feed_source = StaticSource("fixture-feed", [unrelated])
-    feed_orchestrator = DiscoveryOrchestrator(
-        settings,
-        cast(EventRepository, feed_repository),
-        [feed_source],
-        TasteProfile(),
+    matching = DiscoveredEvent(
+        source_name="fixture-feed",
+        source_event_id="matching-local",
+        title="Grindcore Night",
+        genres=("grindcore",),
+        venue_latitude=settings.home_point.latitude,
+        venue_longitude=settings.home_point.longitude,
     )
-    feed_summary = await feed_orchestrator.run()
+    profile = TasteProfile(genres=("grindcore",))
 
-    assert feed_summary.created == 1
-    assert feed_summary.ignored_below_score == 0
-    assert len(feed_repository.upserts) == 1
+    for requires_affinity in (False, True):
+        repository = RecordingRepository()
+        source = StaticSource(
+            "fixture-feed", [unrelated, matching], requires_affinity=requires_affinity
+        )
+        orchestrator = DiscoveryOrchestrator(
+            settings, cast(EventRepository, repository), [source], profile
+        )
+        summary = await orchestrator.run()
 
-    ticketmaster_repository = RecordingRepository()
-    ticketmaster_source = StaticSource(
-        "ticketmaster",
-        [unrelated],
-        requires_affinity=True,
-    )
-    ticketmaster_orchestrator = DiscoveryOrchestrator(
-        settings,
-        cast(EventRepository, ticketmaster_repository),
-        [ticketmaster_source],
-        TasteProfile(),
-    )
-    ticketmaster_summary = await ticketmaster_orchestrator.run()
-
-    assert ticketmaster_summary.created == 0
-    assert ticketmaster_summary.ignored_below_score == 1
-    assert ticketmaster_repository.upserts == []
-
-
-async def _completed() -> None:
-    return None
+        assert summary.created == 1
+        assert summary.ignored_below_score == 1
+        stored_event, stored_score = repository.upserts[0]
+        assert stored_event.title == "Grindcore Night"
+        curated_reasons = [r for r in stored_score.reasons if r.startswith("curated source")]
+        assert bool(curated_reasons) is not requires_affinity

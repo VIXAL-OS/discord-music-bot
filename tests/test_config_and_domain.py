@@ -212,6 +212,46 @@ def test_structured_lineup_beats_title_heuristics() -> None:
     assert score_event(marketing, profile).affinity_score == 0
 
 
+def test_tribute_titles_demoted_unless_local() -> None:
+    from music_event_bot.domain.geography import GeoPoint
+
+    profile = TasteProfile(artists=("Depeche Mode",))
+    home = GeoPoint(40.44, -79.99)  # Pittsburgh
+
+    def tribute(source_event_id: str, latitude: float, longitude: float) -> DiscoveredEvent:
+        return DiscoveredEvent(
+            source_name="test",
+            source_event_id=source_event_id,
+            title="STRANGELOVE - The Depeche Mode Experience",
+            venue_latitude=latitude,
+            venue_longitude=longitude,
+        )
+
+    # A tribute night in town can still reach review, at reduced weight.
+    nearby = score_event(tribute("trib-1", 40.45, -79.98), profile, home=home)
+    assert nearby.affinity_score == 25
+    assert "possible tribute: Depeche Mode (local)" in nearby.reasons
+
+    # The same act two hours away cannot pass the gate on this evidence.
+    cleveland = score_event(tribute("trib-2", 41.50, -81.58), profile, home=home)
+    assert cleveland.affinity_score == 10
+    assert "possible tribute: Depeche Mode" in cleveland.reasons
+
+    # A structured lineup naming the artist is trusted even when the title
+    # carries a tribute-flavored word.
+    real = DiscoveredEvent(
+        source_name="test",
+        source_event_id="trib-3",
+        title="Depeche Mode: Memento Mori Revisited",
+        artists=("Depeche Mode",),
+        venue_latitude=41.50,
+        venue_longitude=-81.58,
+    )
+    result = score_event(real, profile, home=home)
+    assert result.affinity_score == 60
+    assert "artist match: Depeche Mode" in result.reasons
+
+
 def test_genre_alias_spellings_count_once() -> None:
     event = DiscoveredEvent(
         source_name="test",

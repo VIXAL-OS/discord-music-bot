@@ -22,6 +22,7 @@ class BotScheduler:
         sync_reviews: Callable[[], Awaitable[object]],
         expire_events: Callable[[], Awaitable[object]],
         drain_publications: Callable[[], Awaitable[object]] | None = None,
+        remind_rsvps: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self.scheduler.add_job(
             discover,
@@ -56,6 +57,18 @@ class BotScheduler:
                 "interval",
                 minutes=10,
                 id="publish-drain",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+        if remind_rsvps is not None:
+            # Hourly with a 25-hour lookahead: each event is reminded once,
+            # ~24 hours out, and missed windows catch up after downtime.
+            self.scheduler.add_job(
+                remind_rsvps,
+                "interval",
+                hours=1,
+                id="rsvp-reminders",
                 max_instances=1,
                 coalesce=True,
                 replace_existing=True,
