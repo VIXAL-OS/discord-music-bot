@@ -55,6 +55,40 @@ class RecordingRepository:
 
 
 @pytest.mark.asyncio
+async def test_trusted_venue_bypasses_affinity_gate(complete_event) -> None:
+    from dataclasses import replace as dc_replace
+
+    settings = Settings(_env_file=None, trusted_venues="Mr Smalls, Poetry Lounge")
+    trusted_show = dc_replace(
+        complete_event,
+        source_event_id="smalls-1",
+        title="Man Man with Death Valley Girls",
+        venue="Mr Smalls Theatre",
+    )
+    unrelated_show = dc_replace(
+        complete_event,
+        source_event_id="elsewhere-1",
+        title="Unrelated Arena Act",
+        venue="Enormodome",
+    )
+    source = StaticSource(
+        "ticketmaster", [trusted_show, unrelated_show], requires_affinity=True
+    )
+    repository = RecordingRepository()
+    orchestrator = DiscoveryOrchestrator(
+        settings, cast(EventRepository, repository), [source], TasteProfile()
+    )
+
+    summary = await orchestrator.run()
+
+    assert summary.created == 1
+    assert summary.ignored_below_score == 1
+    stored_event, stored_score = repository.upserts[0]
+    assert stored_event.title == "Man Man with Death Valley Girls"
+    assert "trusted venue: Mr Smalls Theatre" in stored_score.reasons
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_uses_one_to_180_day_window() -> None:
     settings = Settings(_env_file=None)
     source = CapturingSource()

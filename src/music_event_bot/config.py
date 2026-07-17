@@ -9,7 +9,7 @@ from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from music_event_bot.domain.geography import CoverageCell, GeoPoint, generate_coverage_cells
-from music_event_bot.domain.normalization import normalize_genre
+from music_event_bot.domain.normalization import normalize_genre, normalize_text
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     preferred_artists: str = ""
     preferred_genres: str = ""
     preferred_venues: str = ""
+    # Venues whose events always reach review, bypassing the taste gate the
+    # way trusted feeds do (comma-separated; substring match on the venue
+    # name, so "Mr Smalls" covers the Theatre and the Funhouse).
+    trusted_venues: str = ""
 
     ticketmaster_api_key: SecretStr | None = None
     home_latitude: float = 40.4406
@@ -239,6 +243,12 @@ class Settings(BaseSettings):
     @property
     def venues(self) -> tuple[str, ...]:
         return _csv(self.preferred_venues)
+
+    @property
+    def trusted_venue_fragments(self) -> tuple[str, ...]:
+        return tuple(
+            fragment for value in _csv(self.trusted_venues) if (fragment := normalize_text(value))
+        )
 
     @property
     def calendar_urls(self) -> tuple[str, ...]:

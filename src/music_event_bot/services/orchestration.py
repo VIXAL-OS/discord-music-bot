@@ -7,8 +7,16 @@ from datetime import UTC, datetime, timedelta
 from music_event_bot.config import Settings
 from music_event_bot.discovery.base import DiscoveryWindow, EventSource
 from music_event_bot.domain.models import TasteProfile
+from music_event_bot.domain.normalization import normalize_text
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.storage.repositories import EventRepository
+
+
+def _is_trusted_venue(venue: str | None, fragments: tuple[str, ...]) -> bool:
+    if not venue or not fragments:
+        return False
+    normalized = normalize_text(venue)
+    return any(fragment in normalized for fragment in fragments)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +69,7 @@ class DiscoveryOrchestrator:
             if diagnostics:
                 source_diagnostics[source.name] = diagnostics
             requires_affinity = getattr(source, "requires_affinity", False)
+            trusted_venues = self.settings.trusted_venue_fragments
             for event in source_events:
                 score = score_event(
                     event,
@@ -68,13 +77,21 @@ class DiscoveryOrchestrator:
                     home=self.settings.home_point,
                     max_travel_radius_miles=self.settings.max_travel_radius_miles,
                 )
-                if (
+                below_gate = (
                     requires_affinity
                     and score.affinity_score < self.settings.minimum_affinity_score
-                ) or score.score < self.settings.minimum_match_score:
+                )
+                venue_trusted = below_gate and _is_trusted_venue(event.venue, trusted_venues)
+                if (below_gate and not venue_trusted) or (
+                    score.score < self.settings.minimum_match_score
+                ):
                     ignored += 1
                     continue
-                if not requires_affinity:
+                if venue_trusted:
+                    score = replace(
+                        score, reasons=(*score.reasons, f"trusted venue: {event.venue}")
+                    )
+                elif not requires_affinity:
                     # Trusted feeds bypass the affinity gate; say so on the
                     # review card instead of leaving "Why it matched" empty.
                     score = replace(
