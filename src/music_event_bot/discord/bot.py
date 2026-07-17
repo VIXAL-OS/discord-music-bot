@@ -201,14 +201,24 @@ class MusicEventDiscordBot(commands.Bot):
             return 0
         registered = await self.repository.list_registered_review_message_ids()
         bot_user_id = self.user.id
-        deleted = await channel.purge(
-            limit=1000,
-            check=lambda message: message_is_orphan_card(message, bot_user_id, registered),
-            reason="Removing orphaned review cards for purged events",
+        def is_orphan(message: discord.Message) -> bool:
+            return message_is_orphan_card(message, bot_user_id, registered)
+
+        try:
+            deleted = await channel.purge(
+                limit=1000,
+                check=is_orphan,
+                reason="Removing orphaned review cards for purged events",
+            )
+        except discord.Forbidden:
             # Bulk deletion requires Manage Messages even for our own
-            # messages; one-by-one deletion does not.
-            bulk=False,
-        )
+            # messages; one-by-one deletion does not, it is just slower.
+            deleted = await channel.purge(
+                limit=1000,
+                check=is_orphan,
+                reason="Removing orphaned review cards for purged events",
+                bulk=False,
+            )
         return len(deleted)
 
     async def sync_reviews(self) -> int:
