@@ -68,6 +68,69 @@ async def _queue_of_three(repository, complete_event) -> list[str]:
 
 
 @pytest.mark.asyncio
+async def test_rsvp_round_trip_and_state_changes(repository, complete_event) -> None:
+    stored = await repository.upsert_discovered(
+        complete_event, ScoreResult(score=10, reasons=())
+    )
+    event_id = stored.event.id
+
+    await repository.upsert_rsvp(event_id, 1, "casey", "going")
+    await repository.upsert_rsvp(event_id, 2, "sam", "interested")
+    await repository.upsert_rsvp(event_id, 3, "vic", "going")
+    assert await repository.get_rsvps(event_id) == {
+        "going": ["casey", "vic"],
+        "interested": ["sam"],
+    }
+
+    # Changing your answer moves you, never duplicates you.
+    await repository.upsert_rsvp(event_id, 1, "casey", "declined")
+    groups = await repository.get_rsvps(event_id)
+    assert groups["going"] == ["vic"]
+    assert groups["declined"] == ["casey"]
+
+    with pytest.raises(ValueError, match="Unknown RSVP state"):
+        await repository.upsert_rsvp(event_id, 4, "eve", "maybe")
+
+
+@pytest.mark.asyncio
+async def test_announcement_registrations_listed_for_published_events(
+    repository, complete_event
+) -> None:
+    event = await _approved_event(repository, complete_event)
+    gateway = FakePublicationGateway()
+    service = PublicationService(repository, gateway)
+    await service.publish(event.id)
+
+    assert await repository.list_announcement_registrations() == [(event.id, 8001)]
+
+
+def test_rsvp_summary_formats_counts_and_overflow() -> None:
+    from music_event_bot.discord.rsvp import rsvp_summary
+
+    assert rsvp_summary({}) is None
+    summary = rsvp_summary(
+        {"going": [f"user{i}" for i in range(12)], "declined": ["one"]}
+    )
+    assert summary is not None
+    assert "**Going (12)**" in summary
+    assert "+2 more" in summary
+    assert "**Can't go (1)**: one" in summary
+    assert "Interested" not in summary
+
+
+def test_announcement_embed_adds_whos_in_field_only_when_rsvps_exist() -> None:
+    from music_event_bot.discord.rsvp import announcement_embed
+    from tests.test_discord_bot import _record
+
+    empty = announcement_embed(_record(), {})
+    assert all(field.name != "Who's in" for field in empty.fields)
+
+    populated = announcement_embed(_record(), {"going": ["casey"]})
+    fields = {field.name: field.value for field in populated.fields}
+    assert "**Going (1)**: casey" in fields["Who's in"]
+
+
+@pytest.mark.asyncio
 async def test_drain_respects_quiet_hours(repository, complete_event) -> None:
     await _queue_of_three(repository, complete_event)
     gateway = FakePublicationGateway()

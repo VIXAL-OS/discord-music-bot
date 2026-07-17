@@ -141,6 +141,19 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         ALTER TABLE reviews ADD COLUMN card_hash TEXT;
         """,
     ),
+    (
+        6,
+        """
+        CREATE TABLE rsvps (
+            event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('going', 'interested', 'declined')),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(event_id, user_id)
+        );
+        """,
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

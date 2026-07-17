@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, timedelta
+from typing import TYPE_CHECKING
 
 import discord
 
 from music_event_bot.config import Settings
 from music_event_bot.domain.models import EventRecord
+
+if TYPE_CHECKING:
+    from music_event_bot.discord.bot import MusicEventDiscordBot
 
 
 def event_marker(event_id: str) -> str:
@@ -66,7 +70,7 @@ def event_embed(event: EventRecord, *, pending: bool = False) -> discord.Embed:
 
 
 class DiscordPublicationGateway:
-    def __init__(self, bot: discord.Client, settings: Settings) -> None:
+    def __init__(self, bot: MusicEventDiscordBot, settings: Settings) -> None:
         self.bot = bot
         self.settings = settings
 
@@ -111,15 +115,21 @@ class DiscordPublicationGateway:
             ):
                 return message.id
 
+        # Local import: the RSVP module renders cards with event_embed, so
+        # importing it at module level would be circular.
+        from music_event_bot.discord.rsvp import RsvpView, announcement_embed
+
         # The scheduled-event link makes Discord render its native event card
-        # with an Interested button — the RSVP surface for the community.
+        # with an Interested button alongside the bot's own RSVP buttons.
         link = self._event_link(scheduled_event_id)
         content = _role_content(role_ids, f"New show alert!\n{link}")
         allowed_mentions = _role_mentions(role_ids)
+        groups = await self.bot.repository.get_rsvps(event.id)
         message = await channel.send(
             content=content,
-            embed=event_embed(event),
+            embed=announcement_embed(event, groups),
             allowed_mentions=allowed_mentions,
+            view=RsvpView(self.bot, event.id),
         )
         return message.id
 
@@ -148,12 +158,15 @@ class DiscordPublicationGateway:
             location=f"{event.venue} — {event.location}"[:100],
             reason=f"Updated music event {event.id}",
         )
+        from music_event_bot.discord.rsvp import announcement_embed
+
         channel = await self._announcement_channel()
         message = await channel.fetch_message(announcement_message_id)
         link = self._event_link(scheduled_event_id)
+        groups = await self.bot.repository.get_rsvps(event.id)
         await message.edit(
             content=_role_content(role_ids, f"Updated show listing\n{link}"),
-            embed=event_embed(event),
+            embed=announcement_embed(event, groups),
             allowed_mentions=_role_mentions(role_ids),
         )
 

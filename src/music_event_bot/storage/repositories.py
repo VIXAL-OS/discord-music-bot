@@ -403,6 +403,52 @@ class EventRepository:
             row = await cursor.fetchone()
             return int(row["review_message_id"]) if row and row["review_message_id"] else None
 
+    async def upsert_rsvp(
+        self, event_id: str, user_id: int, display_name: str, state: str
+    ) -> None:
+        if state not in ("going", "interested", "declined"):
+            raise ValueError(f"Unknown RSVP state: {state}")
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            await connection.execute(
+                """
+                INSERT INTO rsvps(event_id, user_id, display_name, state, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(event_id, user_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    state = excluded.state,
+                    updated_at = excluded.updated_at
+                """,
+                (event_id, str(user_id), display_name, state, now),
+            )
+            await connection.commit()
+
+    async def get_rsvps(self, event_id: str) -> dict[str, list[str]]:
+        """Display names grouped by RSVP state, earliest responders first."""
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT display_name, state FROM rsvps WHERE event_id = ? ORDER BY updated_at",
+                (event_id,),
+            )
+            groups: dict[str, list[str]] = {}
+            for row in await cursor.fetchall():
+                groups.setdefault(row["state"], []).append(row["display_name"])
+            return groups
+
+    async def list_announcement_registrations(self) -> list[tuple[str, int]]:
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT p.event_id, p.announcement_message_id
+                FROM publications p JOIN events e ON e.id = p.event_id
+                WHERE p.announcement_message_id IS NOT NULL AND e.status = 'published'
+                """
+            )
+            return [
+                (row["event_id"], int(row["announcement_message_id"]))
+                for row in await cursor.fetchall()
+            ]
+
     async def count_publications_since(self, cutoff: datetime) -> int:
         async with self.database.connect() as connection:
             cursor = await connection.execute(

@@ -81,7 +81,7 @@ async def test_migrates_existing_schema_one_database_to_two(tmp_path) -> None:
         )
         await connection.commit()
 
-    assert await database.initialize() == 5
+    assert await database.initialize() == 6
     async with database.connect() as connection:
         cursor = await connection.execute("PRAGMA table_info(events)")
         columns = {row["name"] for row in await cursor.fetchall()}

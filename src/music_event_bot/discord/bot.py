@@ -14,6 +14,7 @@ from music_event_bot.app import Application
 from music_event_bot.discord.permissions import require_reviewer
 from music_event_bot.discord.publishing import DiscordPublicationGateway
 from music_event_bot.discord.review import EditEventModal, EventReviewView, review_embed
+from music_event_bot.discord.rsvp import RsvpView
 from music_event_bot.discovery.manual import manual_event
 from music_event_bot.domain.models import EventRecord, EventStatus
 from music_event_bot.domain.scoring import score_event
@@ -61,6 +62,8 @@ class MusicEventDiscordBot(commands.Bot):
     async def setup_hook(self) -> None:
         for event_id, _channel_id, message_id in await self.repository.list_review_registrations():
             self.add_view(EventReviewView(self, event_id), message_id=message_id)
+        for event_id, message_id in await self.repository.list_announcement_registrations():
+            self.add_view(RsvpView(self, event_id), message_id=message_id)
         guild_id = self.settings.discord_guild_id
         if guild_id is None:
             raise RuntimeError("Discord guild ID is missing")
