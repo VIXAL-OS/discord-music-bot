@@ -375,7 +375,11 @@ class EventRepository:
                 """
                 SELECT * FROM events
                 WHERE status IN ('pending_review', 'incomplete', 'publish_failed')
-                ORDER BY score DESC, starts_at IS NULL, starts_at, id
+                ORDER BY EXISTS(
+                    SELECT 1 FROM event_sources s
+                    WHERE s.event_id = events.id
+                      AND s.source_name IN ('manual', 'request')
+                ) DESC, score DESC, starts_at IS NULL, starts_at, id
                 """
             )
             return [_event_from_row(row) for row in await cursor.fetchall()]
@@ -389,8 +393,17 @@ class EventRepository:
         published, rejected) are never touched.
         """
         async with self.database.connect() as connection:
+            # Human-initiated events (slash submissions, @mention requests)
+            # are exempt: someone asked for that specific stop.
             cursor = await connection.execute(
-                "SELECT * FROM events WHERE status IN ('discovered', 'pending_review')"
+                """
+                SELECT * FROM events
+                WHERE status IN ('discovered', 'pending_review')
+                  AND id NOT IN (
+                    SELECT event_id FROM event_sources
+                    WHERE source_name IN ('manual', 'request')
+                  )
+                """
             )
             events = [_event_from_row(row) for row in await cursor.fetchall()]
         by_artist: dict[str, list[EventRecord]] = {}
@@ -542,7 +555,11 @@ class EventRepository:
                 SELECT e.* FROM events e LEFT JOIN reviews r ON r.event_id = e.id
                 WHERE e.status IN ('pending_review', 'incomplete')
                   AND r.review_message_id IS NULL
-                ORDER BY e.score DESC, e.starts_at, e.id
+                ORDER BY EXISTS(
+                    SELECT 1 FROM event_sources s
+                    WHERE s.event_id = e.id
+                      AND s.source_name IN ('manual', 'request')
+                ) DESC, e.score DESC, e.starts_at, e.id
                 LIMIT ?
                 """,
                 (limit,),
@@ -559,6 +576,26 @@ class EventRepository:
                 (now, event_id),
             )
             await connection.commit()
+
+    async def clear_review_messages(self, message_ids: set[int]) -> int:
+        """Unregister cards whose Discord messages no longer exist.
+
+        Their events repost on later sync cycles; without this, a manually
+        deleted card's unchanged hash makes the sync skip it forever.
+        """
+        if not message_ids:
+            return 0
+        now = _now().isoformat()
+        ids = sorted(message_ids)
+        async with self.database.connect() as connection:
+            placeholders = ",".join("?" for _ in ids)
+            cursor = await connection.execute(
+                f"UPDATE reviews SET review_message_id = NULL, card_hash = NULL, "
+                f"updated_at = ? WHERE review_message_id IN ({placeholders})",
+                (now, *ids),
+            )
+            await connection.commit()
+            return cursor.rowcount
 
     async def list_events_needing_reminder(
         self, window_start: datetime, window_end: datetime

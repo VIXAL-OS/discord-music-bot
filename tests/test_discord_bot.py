@@ -166,6 +166,18 @@ async def test_decided_event_card_is_deleted_not_edited() -> None:
     assert repo.saved == []
 
 
+def test_chunk_message_lines_packs_under_discord_cap() -> None:
+    from music_event_bot.discord.bot import chunk_message_lines
+
+    assert chunk_message_lines([]) == []
+    lines = [f"- event {i} " + "x" * 60 for i in range(200)]
+    chunks = chunk_message_lines(lines)
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 1900 for chunk in chunks)
+    # Nothing dropped, order preserved.
+    assert "\n".join(chunks) == "\n".join(lines)
+
+
 def test_orphan_card_detection() -> None:
     from music_event_bot.discord.bot import message_is_orphan_card
 

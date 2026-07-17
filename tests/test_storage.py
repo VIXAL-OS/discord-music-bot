@@ -344,6 +344,58 @@ async def test_published_with_closer_pending_flags_the_mistake(
 
 
 @pytest.mark.asyncio
+async def test_requested_events_jump_the_review_queue(repository, complete_event) -> None:
+    high = replace(
+        complete_event, source_event_id="q-high", title="High Scorer", venue="Hall A"
+    )
+    request = replace(
+        complete_event,
+        source_name="request",
+        source_event_id="q-req",
+        title="Community Request",
+        venue="Hall B",
+    )
+    await repository.upsert_discovered(
+        high,
+        ScoreResult(
+            score=90,
+            reasons=("genre match: metal",),
+            affinity_score=90,
+            location_bonus=0,
+            distance_miles=None,
+        ),
+    )
+    request_record = (
+        await repository.upsert_discovered(
+            request,
+            ScoreResult(
+                score=0,
+                reasons=("requested by mirvana",),
+                affinity_score=0,
+                location_bonus=0,
+                distance_miles=None,
+            ),
+        )
+    ).event
+
+    queue = await repository.list_review_queue()
+    assert [event.title for event in queue] == ["Community Request", "High Scorer"]
+    _total, _posted, waiting = await repository.review_queue_snapshot(10)
+    assert waiting[0].title == "Community Request"
+
+    # Requests are exempt from tour dedupe: nobody's specific ask gets
+    # deleted for being the farther stop.
+    assert await repository.dedupe_tour_events(_HOME, 350) == 0
+
+    # And reconcile: clearing a registration by message id makes it repost.
+    await repository.set_review_message(request_record.id, 2, 555, "hash")
+    assert await repository.clear_review_messages({555}) == 1
+    message_id, card_hash = await repository.get_review_sync_state(request_record.id)
+    assert message_id is None
+    assert card_hash is None
+
+
+@pytest.mark.asyncio
 async def test_rejected_artist_signals_mine_taste_not_logistics(
     repository, complete_event
 ) -> None:

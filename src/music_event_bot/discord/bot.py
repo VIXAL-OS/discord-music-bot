@@ -58,6 +58,22 @@ def message_is_orphan_card(
     )
 
 
+def chunk_message_lines(lines: list[str], limit: int = 1900) -> list[str]:
+    """Pack lines into as few messages as fit under Discord's 2000-char cap."""
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        line = line[:limit]
+        if current and len(current) + len(line) + 1 > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = f"{current}\n{line}" if current else line
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def review_card_hash(embed: discord.Embed, has_view: bool) -> str:
     """Fingerprint of the rendered review card.
 
@@ -211,29 +227,41 @@ class MusicEventDiscordBot(commands.Bot):
         )
 
     async def _sweep_orphan_review_cards(self, channel: discord.TextChannel) -> int:
+        """Delete orphaned cards and reconcile cards deleted out from under us.
+
+        One history scan serves both directions: bot cards whose registration
+        is gone come down, and registrations whose message is gone (reviewer
+        cleared the channel by hand) are unregistered so those events repost —
+        otherwise their unchanged card hash makes the sync skip them forever.
+        """
         if self.user is None:
             return 0
         registered = await self.repository.list_registered_review_message_ids()
         bot_user_id = self.user.id
-        def is_orphan(message: discord.Message) -> bool:
-            return message_is_orphan_card(message, bot_user_id, registered)
-
-        try:
-            deleted = await channel.purge(
-                limit=1000,
-                check=is_orphan,
-                reason="Removing orphaned review cards for purged events",
-            )
-        except discord.Forbidden:
-            # Bulk deletion requires Manage Messages even for our own
-            # messages; one-by-one deletion does not, it is just slower.
-            deleted = await channel.purge(
-                limit=1000,
-                check=is_orphan,
-                reason="Removing orphaned review cards for purged events",
-                bulk=False,
-            )
-        return len(deleted)
+        deleted = 0
+        scanned = 0
+        seen: set[int] = set()
+        async for message in channel.history(limit=1000):
+            scanned += 1
+            if message.id in registered:
+                seen.add(message.id)
+            elif message_is_orphan_card(message, bot_user_id, registered):
+                try:
+                    await message.delete()
+                    deleted += 1
+                except discord.NotFound:
+                    pass
+        missing = set(registered) - seen
+        # Only trust "missing" when the scan covered the whole channel.
+        if missing and scanned < 1000:
+            cleared = await self.repository.clear_review_messages(missing)
+            if cleared:
+                logger.info(
+                    "Reconciled %d review cards deleted outside the bot; "
+                    "their events will repost",
+                    cleared,
+                )
+        return deleted
 
     async def sync_reviews(self) -> int:
         channel = await self._review_channel()
@@ -518,12 +546,13 @@ class MusicEventDiscordBot(commands.Bot):
             )
 
         @group.command(
-            name="queue", description="Show what's waiting in the review and publish queues"
+            name="queue", description="Show everything waiting in the review and publish queues"
         )
         async def queue_view(interaction: discord.Interaction) -> None:
             if not await require_reviewer(interaction, self.settings):
                 return
-            total, posted, next_up = await self.repository.review_queue_snapshot(8)
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            total, posted, waiting = await self.repository.review_queue_snapshot(1000)
             approved = await self.repository.list_events(EventStatus.APPROVED)
 
             def line(event: EventRecord, *, with_score: bool) -> str:
@@ -540,18 +569,17 @@ class MusicEventDiscordBot(commands.Bot):
                 f"{total - posted} still waiting "
                 f"(posting {self.settings.review_post_batch_size} per sync cycle)."
             ]
-            if next_up:
-                lines.append("Next cards up (highest score first):")
-                lines.extend(line(event, with_score=True) for event in next_up)
+            if waiting:
+                lines.append("Waiting, in posting order (requests first, then score):")
+                lines.extend(line(event, with_score=True) for event in waiting)
             lines.append("")
             lines.append(
                 f"**Publish queue:** {len(approved)} approved, announcing up to "
                 f"{self.settings.publish_batch_per_hour}/hour, soonest show first."
             )
-            lines.extend(line(event, with_score=False) for event in approved[:8])
-            await interaction.response.send_message(
-                "\n".join(lines)[:1990], ephemeral=True
-            )
+            lines.extend(line(event, with_score=False) for event in approved)
+            for chunk in chunk_message_lines(lines):
+                await interaction.followup.send(chunk, ephemeral=True)
 
         @group.command(name="show", description="Show an event record")
         async def show(interaction: discord.Interaction, event_id: str) -> None:
