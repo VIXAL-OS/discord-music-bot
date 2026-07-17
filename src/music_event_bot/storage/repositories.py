@@ -392,7 +392,7 @@ class EventRepository:
         published stops anchor their group: undecided siblings farther than
         the anchor are deleted, but a strictly closer sibling survives so the
         reviewer can catch a wrong pick. Guards: same-venue siblings are kept
-        (multi-night runs), stops more than 60 days apart are separate
+        (multi-night runs), stops more than 120 days apart are separate
         engagements, and human-requested events are never touched.
         """
         async with self.database.connect() as connection:
@@ -470,7 +470,7 @@ class EventRepository:
                     continue
                 same_tour = any(
                     k.starts_at is not None
-                    and abs((record.starts_at - k.starts_at).days) <= 60
+                    and abs((record.starts_at - k.starts_at).days) <= 120
                     for k in kept
                 )
                 if same_tour and distance(record) > nearest_kept:
