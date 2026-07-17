@@ -158,7 +158,7 @@ class DiscordPublicationGateway:
             location=f"{event.venue} — {event.location}"[:100],
             reason=f"Updated music event {event.id}",
         )
-        from music_event_bot.discord.rsvp import announcement_embed
+        from music_event_bot.discord.rsvp import RsvpView, announcement_embed
 
         channel = await self._announcement_channel()
         message = await channel.fetch_message(announcement_message_id)
@@ -168,6 +168,9 @@ class DiscordPublicationGateway:
             content=_role_content(role_ids, f"Updated show listing\n{link}"),
             embed=announcement_embed(event, groups),
             allowed_mentions=_role_mentions(role_ids),
+            # Also backfills RSVP buttons onto announcements posted before
+            # the feature existed.
+            view=RsvpView(self.bot, event.id),
         )
 
     def _event_link(self, scheduled_event_id: int) -> str:
