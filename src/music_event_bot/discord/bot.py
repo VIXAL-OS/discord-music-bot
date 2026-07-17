@@ -205,6 +205,9 @@ class MusicEventDiscordBot(commands.Bot):
             limit=1000,
             check=lambda message: message_is_orphan_card(message, bot_user_id, registered),
             reason="Removing orphaned review cards for purged events",
+            # Bulk deletion requires Manage Messages even for our own
+            # messages; one-by-one deletion does not.
+            bulk=False,
         )
         return len(deleted)
 
