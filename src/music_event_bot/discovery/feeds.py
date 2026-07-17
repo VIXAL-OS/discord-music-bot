@@ -317,6 +317,11 @@ class FeedSource:
                 venue = venue or extracted_venue
                 location = location or extracted_address or venue
 
+        # Venue feeds keep past shows listed; only ingest what falls in the
+        # discovery window. Undated entries still come through for editing.
+        if starts_at is not None and not window.starts_at <= starts_at <= window.ends_at:
+            return None
+
         incomplete: list[str] = []
         if starts_at is None:
             incomplete.append("feed entry has no structured event start time")

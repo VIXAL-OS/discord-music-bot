@@ -229,6 +229,9 @@ async def test_sync_reviews_caps_new_posts_per_cycle() -> None:
     async def list_review_queue() -> list[SimpleNamespace]:
         return queue
 
+    async def list_departed_events_with_cards() -> list[SimpleNamespace]:
+        return []
+
     async def get_review_message_id(event_id: str) -> int | None:
         return existing_messages.get(event_id)
 
@@ -238,6 +241,7 @@ async def test_sync_reviews_caps_new_posts_per_cycle() -> None:
             settings=settings,
             repository=SimpleNamespace(
                 list_review_queue=list_review_queue,
+                list_departed_events_with_cards=list_departed_events_with_cards,
                 get_review_message_id=get_review_message_id,
             ),
             discovery=SimpleNamespace(run=None),

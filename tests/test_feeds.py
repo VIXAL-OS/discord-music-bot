@@ -9,7 +9,7 @@ import respx
 from music_event_bot.discovery.feeds import CalendarSource, FeedSource
 
 _THUNDERBIRD_SUMMARY = (
-    "Angela Autumn &#160; Thursday, December 10, 2026Thunderbird Music Hall"
+    "Angela Autumn &#160; Monday, July 20, 2026Thunderbird Music Hall"
     "4053 Butler Street, Pittsburgh, PADoors @ 7:00 PMShow @ 8:00 PM"
     "AGE RESTRICTION: 18+ or with legal guardian "
     "Angela Autumn is a country folk artist releasing &#8220;Cowboy Jack Clementine&#8221; (2023)."
@@ -35,7 +35,7 @@ async def test_venue_newsletter_entries_are_cleaned_and_completed(discovery_wind
     assert event.venue == "Thunderbird Music Hall"
     assert event.location == "4053 Butler Street, Pittsburgh, PA"
     assert event.starts_at is not None
-    assert (event.starts_at.year, event.starts_at.month, event.starts_at.day) == (2026, 12, 10)
+    assert (event.starts_at.year, event.starts_at.month, event.starts_at.day) == (2026, 7, 20)
     assert (event.starts_at.hour, event.starts_at.minute) == (20, 0)
     assert event.incomplete_reasons == ()
     # Entities decoded, section breaks restored, nothing left HTML-escaped.
@@ -63,6 +63,19 @@ async def test_prose_extraction_leaves_truly_incomplete_entries_alone(
     assert event.starts_at is None
     assert event.venue is None
     assert "feed entry has no structured event start time" in event.incomplete_reasons
+
+
+@pytest.mark.asyncio
+async def test_past_feed_entries_are_skipped(discovery_window) -> None:
+    from music_event_bot.discovery.feeds import FeedSource
+
+    entry = {
+        "title": "Angela Autumn",
+        "id": "https://thunderbirdmusichall.com/?p=3",
+        "summary": _THUNDERBIRD_SUMMARY.replace("Monday, July 20, 2026", "Tuesday, June 16, 2026"),
+    }
+    source = FeedSource(("https://thunderbirdmusichall.com/shows/feed/",))
+    assert source._parse_entry(entry, "https://x/feed/", discovery_window) is None
 
 
 @pytest.mark.asyncio

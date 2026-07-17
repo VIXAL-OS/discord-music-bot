@@ -211,7 +211,9 @@ class MusicEventDiscordBot(commands.Bot):
         new_posts = 0
         edits = 0
         limit = self.settings.review_post_batch_size
-        for event in await self.repository.list_review_queue():
+        queue = await self.repository.list_review_queue()
+        departed = await self.repository.list_departed_events_with_cards()
+        for event in [*queue, *departed]:
             message_id = await self.repository.get_review_message_id(event.id)
             if message_id is None:
                 if limit > 0 and new_posts >= limit:

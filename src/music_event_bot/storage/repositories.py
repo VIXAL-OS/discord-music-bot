@@ -409,6 +409,22 @@ class EventRepository:
             )
             return [_event_from_row(row) for row in await cursor.fetchall()]
 
+    async def list_departed_events_with_cards(self) -> list[EventRecord]:
+        """Events that left the review queue but still have a posted card.
+
+        Their cards need one final render (expired/rejected/published state,
+        buttons removed); afterwards the card hash makes them free to check.
+        """
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT e.* FROM events e JOIN reviews r ON r.event_id = e.id
+                WHERE r.review_message_id IS NOT NULL
+                  AND e.status NOT IN ('pending_review', 'incomplete', 'publish_failed')
+                """
+            )
+            return [_event_from_row(row) for row in await cursor.fetchall()]
+
     async def list_registered_review_message_ids(self) -> frozenset[int]:
         """Message IDs of every canonical review card, regardless of status."""
         async with self.database.connect() as connection:
