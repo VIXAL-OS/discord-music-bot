@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from music_event_bot.config import Settings
 from music_event_bot.discovery.base import DiscoveryWindow, EventSource
-from music_event_bot.domain.models import TasteProfile
+from music_event_bot.domain.models import DiscoveredEvent, TasteProfile
 from music_event_bot.domain.normalization import normalize_text
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.storage.repositories import EventRepository
@@ -17,6 +17,32 @@ def _is_trusted_venue(venue: str | None, fragments: tuple[str, ...]) -> bool:
         return False
     normalized = normalize_text(venue)
     return any(fragment in normalized for fragment in fragments)
+
+
+def _apply_address_book(event: DiscoveredEvent, book: dict[str, str]) -> DiscoveredEvent:
+    """Fill venue/location from the address book when the title names them.
+
+    Secret-location parties (Hot Mass) and recurring series never carry an
+    address in their listings; without one their events sit unapprovable.
+    """
+    if not book or (event.venue and event.location):
+        return event
+    title_padded = f" {normalize_text(event.title)} "
+    for fragment, full in book.items():
+        if f" {normalize_text(fragment)} " not in title_padded:
+            continue
+        venue = event.venue or full.split(",", 1)[0].strip()
+        location = event.location or full
+        incomplete = tuple(
+            reason
+            for reason in event.incomplete_reasons
+            if not (reason == "missing venue" and venue)
+            and not (reason == "missing location" and location)
+        )
+        return replace(
+            event, venue=venue, location=location, incomplete_reasons=incomplete
+        )
+    return event
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +96,9 @@ class DiscoveryOrchestrator:
                 source_diagnostics[source.name] = diagnostics
             curated = not getattr(source, "requires_affinity", False)
             trusted_venues = self.settings.trusted_venue_fragments
+            address_book = self.settings.venue_address_map
             for event in source_events:
+                event = _apply_address_book(event, address_book)
                 score = score_event(
                     event,
                     self.profile,

@@ -94,6 +94,39 @@ async def test_trusted_venue_bypasses_affinity_gate(complete_event) -> None:
     assert "trusted venue: Mr Smalls Theatre" in stored_score.reasons
 
 
+def test_address_book_fills_secret_location_series() -> None:
+    from music_event_bot.services.orchestration import _apply_address_book
+
+    book = {"hot mass": "Hot Mass, Pittsburgh, PA (address emailed to ticketholders)"}
+    party = DiscoveredEvent(
+        source_name="ics",
+        source_event_id="hm-1",
+        title="DETOUR: Anny, AK, Lemonline @ Hot Mass",
+        incomplete_reasons=("missing venue", "missing location"),
+    )
+    filled = _apply_address_book(party, book)
+    assert filled.venue == "Hot Mass"
+    assert filled.location == "Hot Mass, Pittsburgh, PA (address emailed to ticketholders)"
+    assert filled.incomplete_reasons == ()
+
+    # An explicit venue always wins, and unrelated titles are untouched.
+    explicit = DiscoveredEvent(
+        source_name="ics",
+        source_event_id="hm-2",
+        title="Hot Mass Anniversary",
+        venue="Somewhere Else",
+        location="Somewhere Else, Pittsburgh, PA",
+    )
+    assert _apply_address_book(explicit, book) is explicit
+    unrelated = DiscoveredEvent(
+        source_name="ics",
+        source_event_id="other-1",
+        title="Mass Choir Recital",
+        incomplete_reasons=("missing venue",),
+    )
+    assert _apply_address_book(unrelated, book).venue is None
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_uses_one_to_180_day_window() -> None:
     settings = Settings(_env_file=None)

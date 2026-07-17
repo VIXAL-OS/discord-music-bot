@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     # {"poetrymillvale.com": "Poetry Lounge, 313 North Avenue, Millvale, PA"}
     # The venue name is taken from the text before the first comma.
     feed_venue_defaults: str = "{}"
+    # Title-fragment -> "Venue, address" fills for events whose source omits
+    # the venue (secret-location parties, series names). Matched word-bounded
+    # against the normalized event title.
+    # {"hot mass": "Hot Mass, Pittsburgh, PA (address emailed to ticketholders)"}
+    venue_address_book: str = "{}"
 
     spotify_client_id: str | None = None
     spotify_client_secret: SecretStr | None = None
@@ -270,6 +275,20 @@ class Settings(BaseSettings):
             raise ValueError("feed_venue_defaults must be a JSON object") from exc
         if not isinstance(raw, dict):
             raise ValueError("feed_venue_defaults must be a JSON object")
+        return {
+            str(fragment).strip().casefold(): str(location).strip()
+            for fragment, location in raw.items()
+            if str(fragment).strip() and str(location).strip()
+        }
+
+    @property
+    def venue_address_map(self) -> dict[str, str]:
+        try:
+            raw = json.loads(self.venue_address_book)
+        except json.JSONDecodeError as exc:
+            raise ValueError("venue_address_book must be a JSON object") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("venue_address_book must be a JSON object")
         return {
             str(fragment).strip().casefold(): str(location).strip()
             for fragment, location in raw.items()
