@@ -66,6 +66,31 @@ async def test_prose_extraction_leaves_truly_incomplete_entries_alone(
 
 
 @pytest.mark.asyncio
+async def test_single_venue_calendar_gets_default_location(
+    discovery_window, tmp_path: Path
+) -> None:
+    no_location = _ALL_DAY_ICS.replace(b"LOCATION:Festival Grounds, Brooklyn, NY\n", b"")
+    local = tmp_path / "poetry.ics"
+    local.write_bytes(no_location)
+    source = CalendarSource(
+        (str(local),),
+        venue_defaults={"poetry.ics": "Poetry Lounge, 313 North Avenue, Millvale, PA"},
+    )
+    events = await source.discover(discovery_window)
+    assert len(events) == 1
+    assert events[0].venue == "Poetry Lounge"
+    assert events[0].location == "Poetry Lounge, 313 North Avenue, Millvale, PA"
+    # Explicit locations always win over the default.
+    with_location = CalendarSource(
+        (str(tmp_path / "other.ics"),),
+        venue_defaults={"other.ics": "Poetry Lounge, 313 North Avenue, Millvale, PA"},
+    )
+    (tmp_path / "other.ics").write_bytes(_ALL_DAY_ICS)
+    kept = await with_location.discover(discovery_window)
+    assert kept[0].venue == "Festival Grounds"
+
+
+@pytest.mark.asyncio
 async def test_past_feed_entries_are_skipped(discovery_window) -> None:
     from music_event_bot.discovery.feeds import FeedSource
 

@@ -31,6 +31,27 @@ _FEED_HEADERS = {
 }
 
 
+def _apply_venue_default(
+    venue: str | None,
+    location: str | None,
+    configured_url: str,
+    venue_defaults: dict[str, str],
+) -> tuple[str | None, str | None]:
+    """Fill missing venue/location from per-feed defaults.
+
+    Single-venue calendars routinely omit LOCATION because the venue is
+    implied by the feed itself.
+    """
+    if venue and location:
+        return venue, location
+    url_folded = configured_url.casefold()
+    for fragment, default_location in venue_defaults.items():
+        if fragment in url_folded:
+            default_venue = default_location.split(",", 1)[0].strip()
+            return venue or default_venue, location or default_location
+    return venue, location
+
+
 def _local_calendar_path(value: str) -> Path | None:
     """Return a filesystem path when the configured value is not a URL.
 
@@ -48,9 +69,15 @@ def _local_calendar_path(value: str) -> Path | None:
 class CalendarSource:
     name = "ics"
 
-    def __init__(self, urls: tuple[str, ...], client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        urls: tuple[str, ...],
+        client: httpx.AsyncClient | None = None,
+        venue_defaults: dict[str, str] | None = None,
+    ) -> None:
         self.urls = urls
         self._client = client
+        self.venue_defaults = venue_defaults or {}
 
     async def discover(self, window: DiscoveryWindow) -> list[DiscoveredEvent]:
         owned_client = self._client is None
@@ -109,6 +136,9 @@ class CalendarSource:
 
         location = _clean_ical_text(component.get("LOCATION"))
         venue = location.split(",", 1)[0].strip() if location else None
+        venue, location = _apply_venue_default(
+            venue, location, source_url, self.venue_defaults
+        )
         categories = component.get("CATEGORIES")
         genres: tuple[str, ...] = ()
         if categories:
@@ -236,9 +266,15 @@ def _extract_venue_location_from_text(text: str) -> tuple[str | None, str | None
 class FeedSource:
     name = "rss"
 
-    def __init__(self, urls: tuple[str, ...], client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        urls: tuple[str, ...],
+        client: httpx.AsyncClient | None = None,
+        venue_defaults: dict[str, str] | None = None,
+    ) -> None:
         self.urls = urls
         self._client = client
+        self.venue_defaults = venue_defaults or {}
 
     async def discover(self, window: DiscoveryWindow) -> list[DiscoveredEvent]:
         owned_client = self._client is None
@@ -316,6 +352,10 @@ class FeedSource:
                 )
                 venue = venue or extracted_venue
                 location = location or extracted_address or venue
+
+        venue, location = _apply_venue_default(
+            venue, location, feed_url, self.venue_defaults
+        )
 
         # Venue feeds keep past shows listed; only ingest what falls in the
         # discovery window. Undated entries still come through for editing.

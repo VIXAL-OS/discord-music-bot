@@ -57,9 +57,15 @@ class Application:
         if settings.ticketmaster_configured:
             sources.append(TicketmasterSource(settings))
         if settings.calendar_urls:
-            sources.append(CalendarSource(settings.calendar_urls))
+            sources.append(
+                CalendarSource(
+                    settings.calendar_urls, venue_defaults=settings.feed_venue_default_map
+                )
+            )
         if settings.feed_urls:
-            sources.append(FeedSource(settings.feed_urls))
+            sources.append(
+                FeedSource(settings.feed_urls, venue_defaults=settings.feed_venue_default_map)
+            )
         if settings.squarespace_event_urls:
             sources.append(SquarespaceSource(settings.squarespace_event_urls))
         discovery = DiscoveryOrchestrator(settings, repository, sources, profile)

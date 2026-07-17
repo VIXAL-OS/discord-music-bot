@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     ics_urls: str = ""
     rss_urls: str = ""
     squarespace_urls: str = ""
+    # JSON object mapping a feed URL fragment (e.g. a hostname) to a default
+    # location for single-venue calendars whose events omit venue/location:
+    # {"poetrymillvale.com": "Poetry Lounge, 313 North Avenue, Millvale, PA"}
+    # The venue name is taken from the text before the first comma.
+    feed_venue_defaults: str = "{}"
 
     spotify_client_id: str | None = None
     spotify_client_secret: SecretStr | None = None
@@ -246,6 +251,20 @@ class Settings(BaseSettings):
     @property
     def squarespace_event_urls(self) -> tuple[str, ...]:
         return _csv(self.squarespace_urls)
+
+    @property
+    def feed_venue_default_map(self) -> dict[str, str]:
+        try:
+            raw = json.loads(self.feed_venue_defaults)
+        except json.JSONDecodeError as exc:
+            raise ValueError("feed_venue_defaults must be a JSON object") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("feed_venue_defaults must be a JSON object")
+        return {
+            str(fragment).strip().casefold(): str(location).strip()
+            for fragment, location in raw.items()
+            if str(fragment).strip() and str(location).strip()
+        }
 
     @property
     def role_map(self) -> dict[str, int]:
