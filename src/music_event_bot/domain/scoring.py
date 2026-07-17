@@ -89,9 +89,26 @@ def score_event(
         if normalized in event_genres and normalized not in strong_by_norm:
             strong_by_norm[normalized] = preferred
     matching_genres = sorted(strong_by_norm.values())
-    if matching_genres:
-        affinity_score += min(30, 15 * len(matching_genres))
-        reasons.append(f"genre match: {', '.join(matching_genres)}")
+    # A genre named in the title is evidence too: club nights and DIY
+    # listings ("Obsidian Goth Night", "Emo Night") carry no tag metadata.
+    title_genre_by_norm: dict[str, str] = {}
+    for preferred in profile.genres:
+        normalized = normalize_genre(preferred)
+        if (
+            normalized
+            and normalized not in strong_by_norm
+            and normalized not in title_genre_by_norm
+            and f" {normalized} " in title_padded
+        ):
+            title_genre_by_norm[normalized] = preferred
+    title_genre_matches = sorted(title_genre_by_norm.values())
+    strong_count = len(matching_genres) + len(title_genre_matches)
+    if strong_count:
+        affinity_score += min(30, 15 * strong_count)
+        if matching_genres:
+            reasons.append(f"genre match: {', '.join(matching_genres)}")
+        if title_genre_matches:
+            reasons.append(f"genre in title: {', '.join(title_genre_matches)}")
 
     weak_by_norm: dict[str, str] = {}
     for preferred in profile.weak_genres:
@@ -99,6 +116,7 @@ def score_event(
         if (
             normalized in event_genres
             and normalized not in strong_by_norm
+            and normalized not in title_genre_by_norm
             and normalized not in weak_by_norm
         ):
             weak_by_norm[normalized] = preferred

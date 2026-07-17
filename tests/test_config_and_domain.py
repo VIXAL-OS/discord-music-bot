@@ -252,6 +252,38 @@ def test_tribute_titles_demoted_unless_local() -> None:
     assert "artist match: Depeche Mode" in result.reasons
 
 
+def test_genre_named_in_title_counts_as_evidence() -> None:
+    profile = TasteProfile(genres=("goth", "industrial"), weak_genres=("rock",))
+    club_night = DiscoveredEvent(
+        source_name="test",
+        source_event_id="night-1",
+        title="Obsidian: Goth Night at Cattivo",
+    )
+    result = score_event(club_night, profile)
+    assert result.affinity_score == 15
+    assert "genre in title: goth" in result.reasons
+
+    # Tag evidence and title evidence share the 30-point strong-genre cap.
+    tagged_too = DiscoveredEvent(
+        source_name="test",
+        source_event_id="night-2",
+        title="Goth Industrial Night",
+        genres=("industrial",),
+    )
+    capped = score_event(tagged_too, profile)
+    assert capped.affinity_score == 30
+    assert "genre match: industrial" in capped.reasons
+    assert "genre in title: goth" in capped.reasons
+
+    # A genre word inside another word does not count.
+    unrelated = DiscoveredEvent(
+        source_name="test",
+        source_event_id="night-3",
+        title="Gothard Brothers Bluegrass Revue",
+    )
+    assert score_event(unrelated, profile).affinity_score == 0
+
+
 def test_previously_rejected_headliner_is_docked_not_banned() -> None:
     profile = TasteProfile(
         artists=("Emma Ruth Rundle",),

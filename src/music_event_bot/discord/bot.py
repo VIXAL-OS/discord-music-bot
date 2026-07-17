@@ -22,6 +22,7 @@ from music_event_bot.discovery.manual import manual_event
 from music_event_bot.domain.models import EventRecord, EventStatus
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.services.publishing import PublicationService
+from music_event_bot.services.request_parser import RequestEventParser
 from music_event_bot.services.scheduler import BotScheduler
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,11 @@ def review_card_hash(embed: discord.Embed, has_view: bool) -> str:
 
 class MusicEventDiscordBot(commands.Bot):
     def __init__(self, app: Application) -> None:
-        super().__init__(command_prefix=commands.when_mentioned, intents=discord.Intents.default())
+        intents = discord.Intents.default()
+        # Privileged, enabled in the Developer Portal: lets @mention requests
+        # read the surrounding conversation ("event card for this pls?").
+        intents.message_content = True
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.music_app = app
         self.settings = app.settings
         self.repository = app.repository
@@ -116,6 +121,7 @@ class MusicEventDiscordBot(commands.Bot):
             catchall_role_ids=catchall_roles,
         )
         self.scheduler = BotScheduler(self.settings)
+        self.request_parser = RequestEventParser(self.settings)
         self._ready_once = False
         self._sync_once = False
         self._sync_complete = asyncio.Event()
@@ -390,6 +396,43 @@ class MusicEventDiscordBot(commands.Bot):
         url_match = _URL_RE.search(content)
         url = url_match.group(0).rstrip(">),.") if url_match else None
         title = " ".join(_URL_RE.sub(" ", content).split()).strip(" -–—:,")
+        context: list[tuple[str, str]] = []
+        try:
+            async for prior in message.channel.history(limit=10, before=message):
+                if prior.content:
+                    context.append((prior.author.display_name, prior.content[:500]))
+        except discord.Forbidden:
+            pass
+        context.reverse()
+        extracted = await self.request_parser.extract(
+            title or content.strip(), context, datetime.now(self.settings.timezone)
+        )
+        starts_at = None
+        date_note = None
+        venue = location = artist = None
+        genres: tuple[str, ...] = ()
+        if extracted:
+            title = str(extracted["title"]).strip()
+            artist = str(extracted.get("artist", "")).strip() or None
+            venue = str(extracted.get("venue", "")).strip() or None
+            location = str(extracted.get("location", "")).strip() or None
+            url = url or (str(extracted.get("url", "")).strip() or None)
+            genres = tuple(
+                str(genre).strip() for genre in extracted.get("genres", []) if str(genre).strip()
+            )
+            raw_start = str(extracted.get("starts_at", "")).strip()
+            if raw_start:
+                if len(raw_start) <= 10:
+                    # Date only: leave the start time for the reviewer to fill
+                    # in rather than fabricating one.
+                    date_note = raw_start
+                else:
+                    try:
+                        starts_at = parse_datetime(raw_start)
+                        if starts_at.tzinfo is None:
+                            starts_at = starts_at.replace(tzinfo=self.settings.timezone)
+                    except (ValueError, OverflowError):
+                        date_note = raw_start
         if not title and not url:
             await message.reply(
                 "Tell me what to add — `@" + self.user.name + " <artist or event,"
@@ -399,14 +442,18 @@ class MusicEventDiscordBot(commands.Bot):
             return
         candidate = manual_event(
             title=title or url or "Untitled request",
-            starts_at=None,
-            venue=None,
-            location=None,
+            starts_at=starts_at,
+            venue=venue,
+            location=location,
             source_url=url,
+            artist=artist,
+            description=f"Date mentioned: {date_note}" if date_note else None,
             duration_minutes=self.settings.default_event_duration_minutes,
             submitted_by=message.author.id,
             source_name="request",
         )
+        if genres:
+            candidate = dataclass_replace(candidate, genres=genres)
         score = score_event(
             candidate,
             self.music_app.profile,
@@ -418,14 +465,16 @@ class MusicEventDiscordBot(commands.Bot):
         )
         result = await self.repository.upsert_discovered(candidate, score)
         await self.sync_event_review(result.event.id)
+        details = [part for part in (venue, date_note) if part]
+        detail_text = f" ({', '.join(details)})" if details else ""
         note = (
             ""
             if result.event.is_complete
-            else " I couldn't work out the date or venue from that, so it may need"
-            " an edit before it can be approved."
+            else " Some details are missing, so it may need an edit before it"
+            " can be approved."
         )
         await message.reply(
-            f"Got it — **{result.event.title}** is in the review queue.{note}",
+            f"Got it — **{result.event.title}**{detail_text} is in the review queue.{note}",
             mention_author=False,
         )
 
