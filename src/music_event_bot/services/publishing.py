@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
-from music_event_bot.domain.models import EventRecord
+from music_event_bot.domain.models import EventRecord, EventStatus
 from music_event_bot.storage.repositories import EventRepository
+
+logger = logging.getLogger(__name__)
 
 
 class PublicationGateway(Protocol):
@@ -77,6 +82,42 @@ class PublicationService:
             if published is None:
                 raise RuntimeError("Published event disappeared")
             return published
+
+    async def drain_approved(
+        self,
+        *,
+        limit_per_hour: int,
+        start_hour: int,
+        end_hour: int,
+        timezone: ZoneInfo,
+        now: datetime | None = None,
+    ) -> int:
+        """Publish queued approved events within the hourly ping budget.
+
+        Runs only between start_hour and end_hour local time so nobody is
+        pinged overnight. The budget counts everything published in the last
+        hour (from any trigger), and the queue drains soonest show first.
+        Returns the number of events published this call.
+        """
+        if limit_per_hour <= 0:
+            return 0
+        current = (now or datetime.now(UTC)).astimezone(timezone)
+        if not start_hour <= current.hour < end_hour:
+            return 0
+        recent = await self.repository.count_publications_since(current - timedelta(hours=1))
+        budget = limit_per_hour - recent
+        published = 0
+        for event in await self.repository.list_events(EventStatus.APPROVED):
+            if published >= budget:
+                break
+            try:
+                await self.publish(event.id)
+                published += 1
+            except Exception:
+                # publish() already marked the event publish_failed; its
+                # review card regains a Retry button on the next sync.
+                logger.exception("Queued publication failed for event %s", event.id)
+        return published
 
     async def update_existing(self, event_id: str) -> None:
         async with self._locks[event_id]:

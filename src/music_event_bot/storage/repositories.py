@@ -403,6 +403,16 @@ class EventRepository:
             row = await cursor.fetchone()
             return int(row["review_message_id"]) if row and row["review_message_id"] else None
 
+    async def count_publications_since(self, cutoff: datetime) -> int:
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT COUNT(*) AS count FROM publications "
+                "WHERE state = 'published' AND updated_at >= ?",
+                (cutoff.astimezone(UTC).isoformat(),),
+            )
+            row = await cursor.fetchone()
+            return int(row["count"]) if row else 0
+
     async def get_review_sync_state(self, event_id: str) -> tuple[int | None, str | None]:
         """Return the posted review message ID and the card hash it carries."""
         async with self.database.connect() as connection:

@@ -15,7 +15,7 @@ from music_event_bot.discord.permissions import require_reviewer
 from music_event_bot.discord.publishing import DiscordPublicationGateway
 from music_event_bot.discord.review import EditEventModal, EventReviewView, review_embed
 from music_event_bot.discovery.manual import manual_event
-from music_event_bot.domain.models import EventStatus
+from music_event_bot.domain.models import EventRecord, EventStatus
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.services.publishing import PublicationService
 from music_event_bot.services.scheduler import BotScheduler
@@ -84,6 +84,7 @@ class MusicEventDiscordBot(commands.Bot):
             self.music_app.discovery.run,
             self.sync_reviews,
             self.repository.expire_past_events,
+            self.drain_publication_queue,
         )
         self.scheduler.start()
         self._initial_cycle_task = asyncio.create_task(self._initial_cycle())
@@ -117,6 +118,45 @@ class MusicEventDiscordBot(commands.Bot):
         await start_task
         if self._sync_error:
             raise self._sync_error
+
+    async def drain_publication_queue(self) -> int:
+        published = await self.publication_service.drain_approved(
+            limit_per_hour=self.settings.publish_batch_per_hour,
+            start_hour=self.settings.publish_start_hour,
+            end_hour=self.settings.publish_end_hour,
+            timezone=self.settings.timezone,
+        )
+        if published:
+            logger.info("Published %d queued approved events", published)
+        return published
+
+    async def publish_or_queue(self, event_id: str) -> EventRecord:
+        """Publish immediately when pacing is off; otherwise queue and drain.
+
+        With pacing on, approval leaves the event in the approved queue and
+        an immediate drain attempt publishes it right away only if the hourly
+        ping budget and quiet-hours window allow.
+        """
+        if self.settings.publish_batch_per_hour <= 0:
+            return await self.publication_service.publish(event_id)
+        await self.drain_publication_queue()
+        event = await self.repository.get_event(event_id)
+        if event is None:
+            raise KeyError(f"Unknown event ID: {event_id}")
+        return event
+
+    def queue_note(self, event: EventRecord) -> str:
+        if event.status is EventStatus.PUBLISHED:
+            return "Event approved and published."
+        if event.status is EventStatus.PUBLISH_FAILED:
+            return "Event approved but publication failed; use Retry publish."
+        return (
+            "Event approved and queued: announcements go out up to "
+            f"{self.settings.publish_batch_per_hour}/hour between "
+            f"{self.settings.publish_start_hour:02d}:00 and "
+            f"{self.settings.publish_end_hour % 24:02d}:00 "
+            f"({self.settings.default_timezone})."
+        )
 
     async def sync_reviews(self) -> int:
         channel = await self._review_channel()
@@ -264,12 +304,12 @@ class MusicEventDiscordBot(commands.Bot):
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 await self.repository.approve(event_id, interaction.user.id)
-                await self.publication_service.publish(event_id)
+                event = await self.publish_or_queue(event_id)
             except Exception as exc:
-                await interaction.followup.send(f"Publication failed: {exc}", ephemeral=True)
+                await interaction.followup.send(f"Approval failed: {exc}", ephemeral=True)
                 await self.refresh_review_message(event_id)
                 return
-            await interaction.followup.send("Event approved and published.", ephemeral=True)
+            await interaction.followup.send(self.queue_note(event), ephemeral=True)
             await self.refresh_review_message(event_id)
 
         @group.command(name="reject", description="Reject a pending event")

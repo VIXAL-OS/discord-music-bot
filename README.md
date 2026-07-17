@@ -259,7 +259,9 @@ discovered -> pending_review -> approved -> published
 incomplete -> edit -> pending_review
 ```
 
-Approval creates the Scheduled Event before posting the public announcement. If Scheduled Event creation fails, no public announcement is sent. Discord IDs are persisted so retries and restarts do not intentionally duplicate publications. The internal event marker is included in Discord descriptions/embeds to recover from a process crash between an external Discord call and the SQLite update.
+Approval places the event in a paced publication queue rather than announcing immediately: up to `MUSICBOT_PUBLISH_BATCH_PER_HOUR` (default 10) approved events publish per hour, soonest show first, and only between `MUSICBOT_PUBLISH_START_HOUR` and `MUSICBOT_PUBLISH_END_HOUR` local time (defaults 06:00–24:00) so nobody is pinged overnight. The queue drains on a 10-minute cadence and an approval triggers an immediate drain attempt, so with budget available an approved event still publishes within moments. Set the batch size to `0` to publish immediately on approval with no pacing. The `Retry publish` button always publishes immediately.
+
+Publication creates the Scheduled Event before posting the public announcement. If Scheduled Event creation fails, no public announcement is sent. Discord IDs are persisted so retries and restarts do not intentionally duplicate publications. The internal event marker is included in Discord descriptions/embeds to recover from a process crash between an external Discord call and the SQLite update.
 
 ## Database and backups
 

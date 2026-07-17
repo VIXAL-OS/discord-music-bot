@@ -75,12 +75,12 @@ class EventReviewView(discord.ui.View):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             await self.bot.repository.approve(self.event_id, interaction.user.id)
-            event = await self.bot.publication_service.publish(self.event_id)
+            event = await self.bot.publish_or_queue(self.event_id)
         except Exception as exc:
-            await interaction.followup.send(f"Publication failed: {exc}", ephemeral=True)
+            await interaction.followup.send(f"Approval failed: {exc}", ephemeral=True)
             await self.bot.refresh_review_message(self.event_id)
             return
-        await interaction.followup.send("Event approved and published.", ephemeral=True)
+        await interaction.followup.send(self.bot.queue_note(event), ephemeral=True)
         await interaction.message.edit(embed=review_embed(event), view=None)
 
     async def _retry(self, interaction: discord.Interaction) -> None:

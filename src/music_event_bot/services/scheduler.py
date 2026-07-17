@@ -21,6 +21,7 @@ class BotScheduler:
         discover: Callable[[], Awaitable[object]],
         sync_reviews: Callable[[], Awaitable[object]],
         expire_events: Callable[[], Awaitable[object]],
+        drain_publications: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self.scheduler.add_job(
             discover,
@@ -49,6 +50,16 @@ class BotScheduler:
             coalesce=True,
             replace_existing=True,
         )
+        if drain_publications is not None:
+            self.scheduler.add_job(
+                drain_publications,
+                "interval",
+                minutes=10,
+                id="publish-drain",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
 
     def start(self) -> None:
         if not self.scheduler.running:

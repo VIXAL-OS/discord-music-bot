@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     # first, so a large backlog drains gradually instead of flooding the
     # channel. Already-posted cards are always kept up to date. 0 = no cap.
     review_post_batch_size: int = 25
+    # Approved events publish in paced batches (soonest show first) so the
+    # community is not blasted by hundreds of role pings. 0 = publish
+    # immediately on approval with no pacing.
+    publish_batch_per_hour: int = 10
+    # Announcements only go out between these local hours (default timezone);
+    # end hour 24 means "until midnight".
+    publish_start_hour: int = 6
+    publish_end_hour: int = 24
 
     discord_token: SecretStr | None = None
     discord_guild_id: int | None = None
@@ -167,11 +175,18 @@ class Settings(BaseSettings):
             raise ValueError("spotify_refresh_hours cannot be negative (0 means every run)")
         return value
 
-    @field_validator("review_post_batch_size")
+    @field_validator("review_post_batch_size", "publish_batch_per_hour")
     @classmethod
     def validate_review_post_batch_size(cls, value: int) -> int:
         if value < 0:
-            raise ValueError("review_post_batch_size cannot be negative (0 means no cap)")
+            raise ValueError("batch sizes cannot be negative (0 disables the cap)")
+        return value
+
+    @field_validator("publish_start_hour", "publish_end_hour")
+    @classmethod
+    def validate_publish_hours(cls, value: int) -> int:
+        if not 0 <= value <= 24:
+            raise ValueError("publish hours must be between 0 and 24")
         return value
 
     @field_validator("ticketmaster_country_code")
@@ -191,6 +206,8 @@ class Settings(BaseSettings):
             GeoPoint(self.discovery_latitude, self.discovery_longitude)
         if self.discovery_horizon_days < self.discovery_start_offset_days:
             raise ValueError("discovery_horizon_days must be at least the start offset")
+        if self.publish_start_hour >= self.publish_end_hour:
+            raise ValueError("publish_start_hour must be before publish_end_hour")
         _ = self.ticketmaster_cells
         return self
 
