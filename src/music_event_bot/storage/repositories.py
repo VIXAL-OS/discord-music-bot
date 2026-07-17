@@ -380,6 +380,35 @@ class EventRepository:
             )
             return [_event_from_row(row) for row in await cursor.fetchall()]
 
+    async def find_nearby_venue_events(
+        self, event: EventRecord, hours: int = 6
+    ) -> list[EventRecord]:
+        """Other events at the same venue within a few hours — likely the
+        same show listed twice (double listings, weekend vs day passes)."""
+        if event.starts_at is None or not event.venue:
+            return []
+        iso = _iso(event.starts_at)
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM events
+                WHERE venue_normalized = ? AND venue_normalized != '' AND id != ?
+                  AND starts_at IS NOT NULL
+                  AND datetime(starts_at) BETWEEN datetime(?, ?) AND datetime(?, ?)
+                  AND status NOT IN ('rejected', 'expired')
+                ORDER BY starts_at
+                """,
+                (
+                    normalize_text(event.venue),
+                    event.id,
+                    iso,
+                    f"-{hours} hours",
+                    iso,
+                    f"+{hours} hours",
+                ),
+            )
+            return [_event_from_row(row) for row in await cursor.fetchall()]
+
     async def list_registered_review_message_ids(self) -> frozenset[int]:
         """Message IDs of every canonical review card, regardless of status."""
         async with self.database.connect() as connection:

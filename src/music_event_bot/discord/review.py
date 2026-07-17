@@ -14,13 +14,19 @@ if TYPE_CHECKING:
     from music_event_bot.discord.bot import MusicEventDiscordBot
 
 
-def review_embed(event: EventRecord) -> discord.Embed:
+def review_embed(event: EventRecord, duplicates: tuple[str, ...] = ()) -> discord.Embed:
     embed = event_embed(event, pending=True)
     embed.title = f"Review: {event.title}"
     embed.add_field(name="Status", value=event.status.value, inline=True)
     if event.match_reasons:
         embed.add_field(
             name="Why it matched", value="\n".join(event.match_reasons), inline=False
+        )
+    if duplicates:
+        embed.add_field(
+            name="Possible duplicates",
+            value="\n".join(duplicates)[:1024],
+            inline=False,
         )
     if not event.is_complete:
         embed.add_field(

@@ -50,6 +50,9 @@ class _ReviewRepoStub:
     async def get_review_sync_state(self, event_id: str) -> tuple[int | None, str | None]:
         return 111, self.stored_hash
 
+    async def find_nearby_venue_events(self, event: EventRecord) -> list[EventRecord]:
+        return []
+
     async def set_review_message(
         self, event_id: str, channel_id: int, message_id: int, card_hash: str | None = None
     ) -> None:
@@ -244,8 +247,9 @@ async def test_sync_reviews_caps_new_posts_per_cycle() -> None:
     bot = MusicEventDiscordBot(app)
     synced_ids: list[str] = []
 
-    async def fake_sync_event_review(event_id: str, *, channel: object = None) -> None:
+    async def fake_sync_event_review(event_id: str, *, channel: object = None) -> str:
         synced_ids.append(event_id)
+        return "edited" if event_id in existing_messages else "posted"
 
     async def fake_review_channel() -> object:
         return object()

@@ -68,6 +68,34 @@ async def _queue_of_three(repository, complete_event) -> list[str]:
 
 
 @pytest.mark.asyncio
+async def test_nearby_venue_events_flagged_as_duplicates(repository, complete_event) -> None:
+    first = await repository.upsert_discovered(
+        complete_event, ScoreResult(score=20, reasons=())
+    )
+    hour_later = replace(
+        complete_event,
+        source_event_id="dupe-listing",
+        title="The Example Ensemble (Late Show)",
+        starts_at=complete_event.starts_at.replace(hour=21),
+        ends_at=complete_event.ends_at.replace(hour=23, minute=30),
+    )
+    second = await repository.upsert_discovered(hour_later, ScoreResult(score=20, reasons=()))
+
+    nearby = await repository.find_nearby_venue_events(first.event)
+    assert [event.id for event in nearby] == [second.event.id]
+
+    far_away = replace(
+        complete_event,
+        source_event_id="different-venue",
+        title="Unrelated Show",
+        venue="Another Room",
+        location="Another Room, New York, NY",
+    )
+    third = await repository.upsert_discovered(far_away, ScoreResult(score=20, reasons=()))
+    assert await repository.find_nearby_venue_events(third.event) == []
+
+
+@pytest.mark.asyncio
 async def test_rsvp_round_trip_and_state_changes(repository, complete_event) -> None:
     stored = await repository.upsert_discovered(
         complete_event, ScoreResult(score=10, reasons=())

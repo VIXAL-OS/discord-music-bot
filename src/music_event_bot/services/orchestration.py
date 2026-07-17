@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from music_event_bot.config import Settings
@@ -60,6 +60,7 @@ class DiscoveryOrchestrator:
             diagnostics = getattr(source, "last_diagnostics", None)
             if diagnostics:
                 source_diagnostics[source.name] = diagnostics
+            requires_affinity = getattr(source, "requires_affinity", False)
             for event in source_events:
                 score = score_event(
                     event,
@@ -68,11 +69,17 @@ class DiscoveryOrchestrator:
                     max_travel_radius_miles=self.settings.max_travel_radius_miles,
                 )
                 if (
-                    getattr(source, "requires_affinity", False)
+                    requires_affinity
                     and score.affinity_score < self.settings.minimum_affinity_score
                 ) or score.score < self.settings.minimum_match_score:
                     ignored += 1
                     continue
+                if not requires_affinity:
+                    # Trusted feeds bypass the affinity gate; say so on the
+                    # review card instead of leaving "Why it matched" empty.
+                    score = replace(
+                        score, reasons=(*score.reasons, f"curated source: {source.name}")
+                    )
                 result = await self.repository.upsert_discovered(event, score)
                 created += int(result.created)
                 sources_added += int(result.source_created)

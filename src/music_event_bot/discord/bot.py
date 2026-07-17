@@ -204,32 +204,50 @@ class MusicEventDiscordBot(commands.Bot):
             self._orphans_swept = True
             try:
                 removed = await self._sweep_orphan_review_cards(channel)
-                if removed:
-                    logger.info("Deleted %d orphaned review cards", removed)
+                logger.info("Orphan card sweep removed %d messages", removed)
             except Exception:
                 logger.exception("Orphaned review card sweep failed")
         synced = 0
         new_posts = 0
+        edits = 0
         limit = self.settings.review_post_batch_size
         for event in await self.repository.list_review_queue():
             message_id = await self.repository.get_review_message_id(event.id)
-            if message_id is None and limit > 0 and new_posts >= limit:
-                # The queue is score-ordered, so the cap always posts the
-                # highest-scored unposted events first; the rest drain on
-                # later sync cycles.
-                continue
-            await self.sync_event_review(event.id, channel=channel)
             if message_id is None:
+                if limit > 0 and new_posts >= limit:
+                    # The queue is score-ordered, so the cap always posts the
+                    # highest-scored unposted events first; the rest drain on
+                    # later sync cycles.
+                    continue
+            elif limit > 0 and edits >= limit:
+                # Discord hard-caps edits to messages older than an hour
+                # (error 30046); spread mass card refreshes over cycles.
+                continue
+            try:
+                result = await self.sync_event_review(event.id, channel=channel)
+            except discord.HTTPException as exc:
+                if exc.code == 30046:
+                    logger.warning(
+                        "Hourly limit for editing old messages reached; deferring "
+                        "remaining card edits to the next sync cycle"
+                    )
+                    edits = limit if limit > 0 else edits
+                    continue
+                raise
+            if result == "posted":
                 new_posts += 1
-            synced += 1
+                synced += 1
+            elif result == "edited":
+                edits += 1
+                synced += 1
         return synced
 
     async def sync_event_review(
         self, event_id: str, *, channel: discord.TextChannel | None = None
-    ) -> None:
+    ) -> str | None:
         event = await self.repository.get_event(event_id)
         if event is None:
-            return
+            return None
         channel = channel or await self._review_channel()
         view = (
             EventReviewView(self, event_id)
@@ -237,12 +255,16 @@ class MusicEventDiscordBot(commands.Bot):
             in {EventStatus.PENDING_REVIEW, EventStatus.INCOMPLETE, EventStatus.PUBLISH_FAILED}
             else None
         )
-        embed = review_embed(event)
+        nearby = await self.repository.find_nearby_venue_events(event)
+        duplicates = tuple(
+            f"{dup.title[:70]} — {dup.status.value} `{dup.id[:8]}`" for dup in nearby[:3]
+        )
+        embed = review_embed(event, duplicates)
         card_hash = review_card_hash(embed, view is not None)
         message_id, stored_hash = await self.repository.get_review_sync_state(event_id)
         if message_id and stored_hash == card_hash:
             # Nothing on the card changed; skip the fetch and edit entirely.
-            return
+            return "unchanged"
         if message_id:
             try:
                 message = await channel.fetch_message(message_id)
@@ -250,11 +272,12 @@ class MusicEventDiscordBot(commands.Bot):
                 await self.repository.set_review_message(
                     event_id, channel.id, message.id, card_hash
                 )
-                return
+                return "edited"
             except discord.NotFound:
                 logger.warning("Stored review message %s no longer exists", message_id)
         message = await channel.send(embed=embed, view=view)
         await self.repository.set_review_message(event_id, channel.id, message.id, card_hash)
+        return "posted"
 
     async def refresh_review_message(self, event_id: str) -> None:
         await self.sync_event_review(event_id)

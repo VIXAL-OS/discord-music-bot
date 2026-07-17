@@ -287,6 +287,14 @@ class FeedSource:
         genres = tuple(
             part.strip() for part in str(genres_raw or "").split(",") if part.strip()
         )
+        if not genres:
+            # feedparser normalizes <category> elements into entry.tags.
+            tags = entry.get("tags") or []
+            genres = tuple(
+                str(tag.get("term")).strip()
+                for tag in tags
+                if isinstance(tag, dict) and str(tag.get("term") or "").strip()
+            )
 
         raw_summary = entry.get("summary") or entry.get("description")
         description = _clean_feed_html(str(raw_summary)) if raw_summary else None

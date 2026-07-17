@@ -25,6 +25,7 @@ async def test_venue_newsletter_entries_are_cleaned_and_completed(discovery_wind
         "id": "https://thunderbirdmusichall.com/?p=1",
         "link": "https://thunderbirdmusichall.com/event/angela-autumn/",
         "summary": _THUNDERBIRD_SUMMARY,
+        "tags": [{"term": "Country"}, {"term": "Folk"}],
     }
     feed_url = "https://thunderbirdmusichall.com/shows/feed/"
     source = FeedSource((feed_url,))
@@ -42,6 +43,7 @@ async def test_venue_newsletter_entries_are_cleaned_and_completed(discovery_wind
     assert "&#160;" not in event.description
     assert "“Cowboy Jack Clementine”" in event.description
     assert "\nDoors @ 7:00 PM" in event.description
+    assert event.genres == ("Country", "Folk")
 
 
 @pytest.mark.asyncio
