@@ -252,6 +252,51 @@ def test_tribute_titles_demoted_unless_local() -> None:
     assert "artist match: Depeche Mode" in result.reasons
 
 
+def test_previously_rejected_headliner_is_docked_not_banned() -> None:
+    profile = TasteProfile(
+        artists=("Emma Ruth Rundle",),
+        genres=("metal",),
+        demoted_artists=("Cradle of Filth",),
+    )
+
+    rejected_again = DiscoveredEvent(
+        source_name="test",
+        source_event_id="demote-1",
+        title="CRADLE OF FILTH: Majestic In Death II",
+        artist="Cradle of Filth",
+        artists=("Cradle of Filth", "Moonspell"),
+        genres=("metal",),
+    )
+    result = score_event(rejected_again, profile)
+    # 15 genre points minus the 15-point demotion: gated out.
+    assert result.affinity_score == 0
+    assert "previously rejected artist: Cradle of Filth (-15)" in result.reasons
+
+    # A liked artist on the bill overrides the demotion entirely.
+    with_liked_support = DiscoveredEvent(
+        source_name="test",
+        source_event_id="demote-2",
+        title="Cradle of Filth with Emma Ruth Rundle",
+        artist="Cradle of Filth",
+        artists=("Cradle of Filth", "Emma Ruth Rundle"),
+        genres=("metal",),
+    )
+    boosted = score_event(with_liked_support, profile)
+    assert boosted.affinity_score == 75
+    assert all("previously rejected" not in reason for reason in boosted.reasons)
+
+    # Demotion targets the headliner, not anyone sharing a bill with them.
+    support_elsewhere = DiscoveredEvent(
+        source_name="test",
+        source_event_id="demote-3",
+        title="Moonspell",
+        artist="Moonspell",
+        artists=("Moonspell", "Cradle of Filth"),
+        genres=("metal",),
+    )
+    assert score_event(support_elsewhere, profile).affinity_score == 15
+
+
 def test_genre_alias_spellings_count_once() -> None:
     event = DiscoveredEvent(
         source_name="test",

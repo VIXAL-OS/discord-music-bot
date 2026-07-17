@@ -60,6 +60,9 @@ class TasteProfile:
     # by mapping niche tags upward. They boost scores but can never push an
     # event past the review gate on their own.
     weak_genres: tuple[str, ...] = ()
+    # Negative evidence: headliners whose genre-matched events the reviewer
+    # rejected (and never approved). Their future events score lower.
+    demoted_artists: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

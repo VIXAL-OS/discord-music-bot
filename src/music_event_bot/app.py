@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from music_event_bot.config import Settings
 from music_event_bot.discovery.base import EventSource
@@ -43,6 +43,13 @@ class Application:
             venues=manual_profile.venues,
         )
         profile = await TasteEnricher(settings, repository).enrich(profile)
+        demoted_artists = await repository.rejected_artist_signals()
+        if demoted_artists:
+            profile = replace(profile, demoted_artists=demoted_artists)
+            logger.info(
+                "Review history demotes %d previously rejected headliners",
+                len(demoted_artists),
+            )
         aliases_added = await repository.seed_genre_role_aliases(settings.role_map)
         if aliases_added:
             logger.info("Seeded %d genre->role aliases from cached tag mappings", aliases_added)

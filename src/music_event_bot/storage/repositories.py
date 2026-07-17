@@ -469,6 +469,54 @@ class EventRepository:
                     flagged.append((pub.title, min(closer)[1].title))
         return flagged
 
+    async def rejected_artist_signals(self) -> tuple[str, ...]:
+        """Headliners of rejected events, mined as negative taste evidence.
+
+        Only genre-matched rejections count: events rejected despite an
+        "artist match" reason were logistics (tour duplicates, tributes,
+        distance), not taste, and any artist with an approved or published
+        event is exempt outright.
+        """
+        from music_event_bot.domain.scoring import _TRIBUTE_MARKERS
+
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT * FROM events WHERE status IN "
+                "('rejected', 'approved', 'published', 'publish_failed')"
+            )
+            events = [_event_from_row(row) for row in await cursor.fetchall()]
+
+        def headliner(event: EventRecord) -> str:
+            if event.artist:
+                return normalize_text(event.artist)
+            for name in event.artists:
+                normalized = normalize_text(name)
+                if normalized:
+                    return normalized
+            return ""
+
+        liked: set[str] = set()
+        for event in events:
+            if event.status is not EventStatus.REJECTED:
+                liked.update(
+                    name
+                    for name in (normalize_text(n) for n in (event.artist or "", *event.artists))
+                    if name
+                )
+        demoted: dict[str, str] = {}
+        for event in events:
+            if event.status is not EventStatus.REJECTED:
+                continue
+            if any(reason.startswith("artist match:") for reason in event.match_reasons):
+                continue
+            title = normalize_text(event.title)
+            if any(marker in title for marker in _TRIBUTE_MARKERS):
+                continue
+            name = headliner(event)
+            if name and name not in liked and name not in demoted:
+                demoted[name] = event.artist or event.artists[0]
+        return tuple(sorted(demoted.values(), key=str.lower))
+
     async def review_queue_snapshot(
         self, limit: int
     ) -> tuple[int, int, list[EventRecord]]:

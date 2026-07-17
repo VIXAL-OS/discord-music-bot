@@ -344,6 +344,57 @@ async def test_published_with_closer_pending_flags_the_mistake(
 
 
 @pytest.mark.asyncio
+async def test_rejected_artist_signals_mine_taste_not_logistics(
+    repository, complete_event
+) -> None:
+    genre_score = ScoreResult(
+        score=15,
+        reasons=("genre match: metal",),
+        affinity_score=15,
+        location_bonus=0,
+        distance_miles=None,
+    )
+
+    def show(source_event_id: str, title: str, artist: str):
+        return replace(
+            complete_event,
+            source_event_id=source_event_id,
+            title=title,
+            artist=artist,
+            venue=f"Venue {source_event_id}",
+        )
+
+    # Genre-matched rejection: pure taste signal.
+    taste = (
+        await repository.upsert_discovered(
+            show("sig-1", "Cradle of Filth", "Cradle of Filth"), genre_score
+        )
+    ).event
+    # Rejection of an artist-matched event: logistics, not taste.
+    logistics = (
+        await repository.upsert_discovered(
+            show("sig-2", "Boy Harsher", "Boy Harsher"), _ARTIST_MATCH_SCORE
+        )
+    ).event
+    # Genre-matched rejection of an artist with an approved sibling: exempt.
+    liked_reject = (
+        await repository.upsert_discovered(
+            show("sig-3", "Weedeater in Cleveland", "Weedeater"), genre_score
+        )
+    ).event
+    liked_approved = (
+        await repository.upsert_discovered(
+            show("sig-4", "Weedeater at Reverb", "Weedeater"), genre_score
+        )
+    ).event
+    for event in (taste, logistics, liked_reject):
+        await repository.reject(event.id, 4, None)
+    await repository.approve(liked_approved.id, 4)
+
+    assert await repository.rejected_artist_signals() == ("Cradle of Filth",)
+
+
+@pytest.mark.asyncio
 async def test_rsvp_reminder_queries(repository, complete_event) -> None:
     from datetime import UTC, datetime
 

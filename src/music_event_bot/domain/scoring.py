@@ -57,6 +57,7 @@ def score_event(
     event_artists.discard("")
     title_padded = f" {title} "
     title_is_tribute = any(marker in title for marker in _TRIBUTE_MARKERS)
+    matched_artist = False
     for preferred in profile.artists:
         preferred_normalized = normalize_text(preferred)
         if not preferred_normalized:
@@ -77,6 +78,7 @@ def score_event(
         else:
             affinity_score += 60
             reasons.append(f"artist match: {preferred}")
+        matched_artist = True
         break
 
     # One match per normalized genre, so alias spellings ("alt rock",
@@ -113,6 +115,31 @@ def score_event(
             affinity_score += 10
             reasons.append(f"venue match: {preferred}")
             break
+
+    # Negative evidence from review history: a headliner whose genre-matched
+    # events were rejected gets docked, not banned — strong enough evidence
+    # elsewhere on the bill (a liked support act) still surfaces the show.
+    if not matched_artist and profile.demoted_artists:
+        demoted: dict[str, str] = {}
+        for name in profile.demoted_artists:
+            normalized = normalize_text(name)
+            if normalized:
+                demoted.setdefault(normalized, name)
+        lineup = (normalize_text(name) for name in event.artists)
+        headliner = artist or next((name for name in lineup if name), "")
+        hit = demoted.get(headliner, "")
+        if not hit and not event_artists and not artist:
+            hit = next(
+                (
+                    display
+                    for normalized, display in demoted.items()
+                    if f" {normalized} " in title_padded
+                ),
+                "",
+            )
+        if hit:
+            affinity_score = max(0, affinity_score - 15)
+            reasons.append(f"previously rejected artist: {hit} (-15)")
 
     if location_bonus and distance_miles is not None:
         reasons.append(
