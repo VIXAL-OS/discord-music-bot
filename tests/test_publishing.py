@@ -27,9 +27,9 @@ class FakePublicationGateway:
         return 7001
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_ids: tuple[int, ...]
+        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int
     ) -> int:
-        self.announcement_calls.append((event.id, role_ids))
+        self.announcement_calls.append((event.id, role_ids, scheduled_event_id))
         if self.announcement_error is not None:
             raise self.announcement_error
         return 8001
@@ -137,7 +137,7 @@ async def test_multiple_roles_tagged_and_fallback_suppressed(
     await service.publish(event.id)
     # Both specific roles are tagged; the catch-all role is suppressed
     # because specific matches exist.
-    assert gateway.announcement_calls == [(event.id, (2, 1))]
+    assert gateway.announcement_calls == [(event.id, (2, 1), 7001)]
 
 
 @pytest.mark.asyncio
@@ -153,7 +153,7 @@ async def test_fallback_role_used_when_nothing_specific_matches(
     service = PublicationService(repository, gateway, fallback_role_ids=frozenset({99}))
 
     await service.publish(event.id)
-    assert gateway.announcement_calls == [(event.id, (99,))]
+    assert gateway.announcement_calls == [(event.id, (99,), 7001)]
 
 
 @pytest.mark.asyncio
@@ -172,7 +172,7 @@ async def test_publish_records_success_and_reuses_existing_external_resources(
     assert first.status is EventStatus.PUBLISHED
     assert second.status is EventStatus.PUBLISHED
     assert gateway.scheduled_calls == [event.id]
-    assert gateway.announcement_calls == [(event.id, (1234,))]
+    assert gateway.announcement_calls == [(event.id, (1234,), 7001)]
     assert publication is not None
     assert publication["state"] == "published"
     assert publication["scheduled_event_id"] == "7001"
@@ -209,7 +209,7 @@ async def test_publish_marks_failure_and_retry_preserves_created_scheduled_event
 
     assert retried.status is EventStatus.PUBLISHED
     assert gateway.scheduled_calls == [event.id]
-    assert gateway.announcement_calls == [(event.id, ()), (event.id, ())]
+    assert gateway.announcement_calls == [(event.id, (), 7001), (event.id, (), 7001)]
     assert completed_publication is not None
     assert completed_publication["state"] == "published"
     assert completed_publication["attempts"] == 2

@@ -101,7 +101,7 @@ class DiscordPublicationGateway:
         return scheduled.id
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_ids: tuple[int, ...]
+        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int
     ) -> int:
         channel = await self._announcement_channel()
         marker = event_marker(event.id)
@@ -111,7 +111,10 @@ class DiscordPublicationGateway:
             ):
                 return message.id
 
-        content = _role_content(role_ids, "New show alert!")
+        # The scheduled-event link makes Discord render its native event card
+        # with an Interested button — the RSVP surface for the community.
+        link = self._event_link(scheduled_event_id)
+        content = _role_content(role_ids, f"New show alert!\n{link}")
         allowed_mentions = _role_mentions(role_ids)
         message = await channel.send(
             content=content,
@@ -147,11 +150,15 @@ class DiscordPublicationGateway:
         )
         channel = await self._announcement_channel()
         message = await channel.fetch_message(announcement_message_id)
+        link = self._event_link(scheduled_event_id)
         await message.edit(
-            content=_role_content(role_ids, "Updated show listing"),
+            content=_role_content(role_ids, f"Updated show listing\n{link}"),
             embed=event_embed(event),
             allowed_mentions=_role_mentions(role_ids),
         )
+
+    def _event_link(self, scheduled_event_id: int) -> str:
+        return f"https://discord.com/events/{self.settings.discord_guild_id}/{scheduled_event_id}"
 
     async def _guild(self) -> discord.Guild:
         if self.settings.discord_guild_id is None:

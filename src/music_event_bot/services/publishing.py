@@ -17,7 +17,7 @@ class PublicationGateway(Protocol):
     async def create_or_find_scheduled_event(self, event: EventRecord) -> int: ...
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_ids: tuple[int, ...]
+        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int
     ) -> int: ...
 
     async def update_published_event(
@@ -69,7 +69,7 @@ class PublicationService:
                 else:
                     role_ids = await self._roles_for(event)
                     announcement_message_id = await self.gateway.create_or_find_announcement(
-                        event, role_ids
+                        event, role_ids, scheduled_event_id
                     )
                     await self.repository.record_announcement(event_id, announcement_message_id)
 
