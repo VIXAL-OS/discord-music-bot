@@ -208,3 +208,33 @@ async def test_rss_unstructured_entry_is_retained_as_incomplete(discovery_window
         "feed entry has no structured venue",
         "feed entry has no structured location",
     )
+
+
+_GENRE_LINE_ICS = (
+    b"BEGIN:VCALENDAR\r\n"
+    b"VERSION:2.0\r\n"
+    b"PRODID:-//test//EN\r\n"
+    b"BEGIN:VEVENT\r\n"
+    b"UID:diy-1\r\n"
+    b"DTSTART:20260715T230000Z\r\n"
+    b"DTEND:20260716T020000Z\r\n"
+    b"SUMMARY:Trash Palace + Gridfailure\r\n"
+    b"LOCATION:Mr. Roboto Project\x5c, 5106 Penn Ave\x5c, Pittsburgh\x5c, PA\r\n"
+    b"DESCRIPTION:All ages DIY show.\x5cnGenres: grindcore\x5c, powerviolence"
+    b"\x5cnDoors 7 PM.\r\n"
+    b"END:VEVENT\r\n"
+    b"END:VCALENDAR\r\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_calendar_description_genre_line(discovery_window, tmp_path: Path) -> None:
+    """Curation tasks label genres in prose; the parser lifts them out."""
+    local = tmp_path / "diy.ics"
+    local.write_bytes(_GENRE_LINE_ICS)
+    events = await CalendarSource((str(local),)).discover(discovery_window)
+    assert len(events) == 1
+    event = events[0]
+    assert event.genres == ("grindcore", "powerviolence")
+    assert event.venue == "Mr. Roboto Project"
+    assert "DIY show" in (event.description or "")

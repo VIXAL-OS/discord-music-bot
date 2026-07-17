@@ -144,6 +144,9 @@ class CalendarSource:
         if categories:
             decoded = categories.cats if hasattr(categories, "cats") else [str(categories)]
             genres = tuple(str(value) for value in decoded)
+        description = _clean_ical_text(component.get("DESCRIPTION"))
+        if not genres and description:
+            genres = _genres_from_description(description)
 
         incomplete: list[str] = []
         if all_day:
@@ -171,10 +174,25 @@ class CalendarSource:
             timezone=str(starts_at.tzinfo) if starts_at else str(window.default_timezone),
             source_url=_clean_ical_text(component.get("URL")) or source_url,
             genres=genres,
-            description=_clean_ical_text(component.get("DESCRIPTION")),
+            description=description,
             raw={"uid": uid, "source_calendar": source_url},
             incomplete_reasons=tuple(dict.fromkeys(incomplete)),
         )
+
+
+_GENRES_LINE_RE = re.compile(r"(?im)^\s*genres?\s*:\s*(.+)$")
+
+
+def _genres_from_description(description: str) -> tuple[str, ...]:
+    """Genres from a "Genres: a, b" line in an event description.
+
+    Google Calendar has no category field, so curation tasks that write
+    events onto the calendar label genres in prose instead.
+    """
+    match = _GENRES_LINE_RE.search(description)
+    if not match:
+        return ()
+    return tuple(part.strip() for part in match.group(1).split(",") if part.strip())
 
 
 _HTML_BREAK_RE = re.compile(r"(?i)<\s*br\s*/?>|<\s*/(?:p|div|li|h[1-6]|tr)\s*>")
