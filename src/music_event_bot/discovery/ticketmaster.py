@@ -11,6 +11,7 @@ from dateutil.parser import isoparse
 
 from music_event_bot.config import Settings
 from music_event_bot.discovery.base import DiscoveryWindow
+from music_event_bot.discovery.images import is_publishable_image
 from music_event_bot.domain.geography import (
     CoverageCell,
     GeoPoint,
@@ -18,16 +19,6 @@ from music_event_bot.domain.geography import (
     haversine_miles,
 )
 from music_event_bot.domain.models import DiscoveredEvent
-
-# Ticketmaster serves attraction/event art under /dam/a/ and /dam/e/, which depicts
-# the actual act, but falls back to /dam/c/ "category" art — generic genre stock
-# photos (an anonymous guitarist in smoke, a laser show, a tambourine close-up)
-# reused verbatim across every unrelated show in that genre. Never publishable.
-_STOCK_IMAGE_MARKER = "/dam/c/"
-
-
-def _is_stock_placeholder(url: str | None) -> bool:
-    return bool(url) and _STOCK_IMAGE_MARKER in url.lower()
 
 
 class TicketmasterSource:
@@ -241,7 +232,7 @@ class TicketmasterSource:
         # notice and supply a real one, whereas a plausible-looking placeholder
         # ships to the announcement unchallenged.
         images = [
-            image for image in raw.get("images", []) if not _is_stock_placeholder(image.get("url"))
+            image for image in raw.get("images", []) if is_publishable_image(image.get("url"))
         ]
         images_16_9 = [image for image in images if image.get("ratio") == "16_9"] or images
         image_url = None

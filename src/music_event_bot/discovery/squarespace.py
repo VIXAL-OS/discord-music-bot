@@ -11,6 +11,7 @@ import httpx
 
 from music_event_bot.discovery.base import DiscoveryWindow
 from music_event_bot.discovery.feeds import _FEED_HEADERS
+from music_event_bot.discovery.images import is_publishable_image
 from music_event_bot.domain.models import DiscoveredEvent
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,7 @@ class SquarespaceSource:
         if not location:
             incomplete.append("missing location")
 
+        asset_url = str(item.get("assetUrl") or "") or None
         categories = item.get("categories", [])
         tags = item.get("tags", [])
         genres = tuple(
@@ -177,7 +179,7 @@ class SquarespaceSource:
             source_url=url,
             genres=genres,
             description=_strip_html(item.get("excerpt")),
-            image_url=str(item.get("assetUrl") or "") or None,
+            image_url=asset_url if is_publishable_image(asset_url) else None,
             raw={"squarespace_url": configured_url, "item_id": item_id},
             incomplete_reasons=tuple(incomplete),
         )
