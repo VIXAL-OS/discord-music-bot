@@ -19,6 +19,16 @@ from music_event_bot.domain.geography import (
 )
 from music_event_bot.domain.models import DiscoveredEvent
 
+# Ticketmaster serves attraction/event art under /dam/a/ and /dam/e/, which depicts
+# the actual act, but falls back to /dam/c/ "category" art — generic genre stock
+# photos (an anonymous guitarist in smoke, a laser show, a tambourine close-up)
+# reused verbatim across every unrelated show in that genre. Never publishable.
+_STOCK_IMAGE_MARKER = "/dam/c/"
+
+
+def _is_stock_placeholder(url: str | None) -> bool:
+    return bool(url) and _STOCK_IMAGE_MARKER in url.lower()
+
 
 class TicketmasterSource:
     name = "ticketmaster"
@@ -227,7 +237,12 @@ class TicketmasterSource:
         ]
         location = ", ".join(str(part) for part in address_parts if part)
 
-        images = raw.get("images", [])
+        # Better no artwork than stock artwork: an empty image lets the reviewer
+        # notice and supply a real one, whereas a plausible-looking placeholder
+        # ships to the announcement unchallenged.
+        images = [
+            image for image in raw.get("images", []) if not _is_stock_placeholder(image.get("url"))
+        ]
         images_16_9 = [image for image in images if image.get("ratio") == "16_9"] or images
         image_url = None
         if images_16_9:

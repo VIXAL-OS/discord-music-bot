@@ -72,6 +72,44 @@ def test_duplicate_info_and_please_note_kept_once(tmp_path, discovery_window) ->
     assert parsed.description == "Doors 7 PM. Rain or shine.\n\nListed price range: 25–75 USD"
 
 
+def test_generic_category_art_is_rejected(tmp_path, discovery_window) -> None:
+    """/dam/c/ assets are genre stock photos, not pictures of the act."""
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "events.sqlite3",
+        ticketmaster_api_key="test-api-key",
+        discovery_latitude=40.7,
+        discovery_longitude=-74.0,
+    )
+    source = TicketmasterSource(settings)
+
+    # A wider placeholder must not outrank the genuine attraction art.
+    mixed = _ticketmaster_event(
+        "stock-1",
+        "Stock Show",
+        images=[
+            {"ratio": "16_9", "width": 2048, "url": "https://s1.ticketm.net/dam/c/e7c/stock.jpg"},
+            {"ratio": "16_9", "width": 640, "url": "https://s1.ticketm.net/dam/a/441/real.jpg"},
+        ],
+    )
+    parsed = source._parse_event(mixed, discovery_window, settings.ticketmaster_cells[0])
+    assert parsed is not None
+    assert parsed.image_url == "https://s1.ticketm.net/dam/a/441/real.jpg"
+
+    # When only placeholders exist, publish with no image rather than a fake one.
+    only_stock = _ticketmaster_event(
+        "stock-2",
+        "Stock Only",
+        images=[
+            {"ratio": "16_9", "width": 2048, "url": "https://s1.ticketm.net/dam/c/e7c/stock.jpg"},
+            {"ratio": "4_3", "width": 1600, "url": "https://s1.ticketm.net/DAM/C/f50/other.jpg"},
+        ],
+    )
+    parsed = source._parse_event(only_stock, discovery_window, settings.ticketmaster_cells[0])
+    assert parsed is not None
+    assert parsed.image_url is None
+
+
 @pytest.mark.asyncio
 async def test_ticketmaster_parses_events_and_follows_pages(tmp_path, discovery_window) -> None:
     settings = Settings(
