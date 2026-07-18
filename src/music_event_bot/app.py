@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, replace
 
 from music_event_bot.config import Settings
+from music_event_bot.discovery.artwork import ArtworkResolver
 from music_event_bot.discovery.base import EventSource
 from music_event_bot.discovery.feeds import CalendarSource, FeedSource
 from music_event_bot.discovery.squarespace import SquarespaceSource
@@ -75,5 +76,7 @@ class Application:
             )
         if settings.squarespace_event_urls:
             sources.append(SquarespaceSource(settings.squarespace_event_urls))
-        discovery = DiscoveryOrchestrator(settings, repository, sources, profile)
+        discovery = DiscoveryOrchestrator(
+            settings, repository, sources, profile, artwork=ArtworkResolver()
+        )
         return cls(settings, database, repository, profile, sources, discovery)

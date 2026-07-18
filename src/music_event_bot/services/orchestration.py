@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from music_event_bot.config import Settings
+from music_event_bot.discovery.artwork import ArtworkResolver
 from music_event_bot.discovery.base import DiscoveryWindow, EventSource
 from music_event_bot.domain.models import DiscoveredEvent, TasteProfile
 from music_event_bot.domain.normalization import normalize_text
@@ -54,6 +55,7 @@ class DiscoverySummary:
     sources_added: int
     ignored_below_score: int
     source_errors: dict[str, str]
+    artwork_found: int = 0
 
 
 class DiscoveryOrchestrator:
@@ -63,11 +65,13 @@ class DiscoveryOrchestrator:
         repository: EventRepository,
         sources: list[EventSource],
         profile: TasteProfile,
+        artwork: ArtworkResolver | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.sources = sources
         self.profile = profile
+        self.artwork = artwork
 
     async def run(self) -> DiscoverySummary:
         started_at = datetime.now(UTC)
@@ -79,7 +83,7 @@ class DiscoveryOrchestrator:
             default_timezone=self.settings.timezone,
             default_event_duration_minutes=self.settings.default_event_duration_minutes,
         )
-        discovered = created = sources_added = ignored = 0
+        discovered = created = sources_added = ignored = artwork_found = 0
         errors: dict[str, str] = {}
         source_diagnostics: dict[str, object] = {}
 
@@ -126,6 +130,13 @@ class DiscoveryOrchestrator:
                 result = await self.repository.upsert_discovered(event, score)
                 created += int(result.created)
                 sources_added += int(result.source_created)
+                # Only after the upsert, so a listing whose art was already found
+                # (or supplied by a merged Ticketmaster row) is never re-fetched.
+                if self.artwork is not None and result.event.image_url is None:
+                    image = await self.artwork.resolve(event)
+                    if image:
+                        await self.repository.update_event(result.event.id, image_url=image)
+                        artwork_found += 1
 
         deduped = await self.repository.dedupe_tour_events(
             self.settings.home_point, self.settings.max_travel_radius_miles
@@ -148,6 +159,7 @@ class DiscoveryOrchestrator:
             sources_added=sources_added,
             ignored_below_score=ignored,
             source_errors=errors,
+            artwork_found=artwork_found,
         )
         await self.repository.record_job_run(
             "discovery",
@@ -158,6 +170,7 @@ class DiscoveryOrchestrator:
                 "created": created,
                 "sources_added": sources_added,
                 "ignored_below_score": ignored,
+                "artwork_found": artwork_found,
                 "source_errors": errors,
                 "source_diagnostics": source_diagnostics,
             },
