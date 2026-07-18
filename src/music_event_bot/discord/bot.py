@@ -404,8 +404,12 @@ class MusicEventDiscordBot(commands.Bot):
         except discord.Forbidden:
             pass
         context.reverse()
+        page_text = await self._fetch_page_text(url) if url else None
         extracted = await self.request_parser.extract(
-            title or content.strip(), context, datetime.now(self.settings.timezone)
+            content.strip(),
+            context,
+            datetime.now(self.settings.timezone),
+            page_text=page_text,
         )
         starts_at = None
         date_note = None
@@ -477,6 +481,32 @@ class MusicEventDiscordBot(commands.Bot):
             f"Got it — **{result.event.title}**{detail_text} is in the review queue.{note}",
             mention_author=False,
         )
+
+    async def _fetch_page_text(self, url: str) -> str | None:
+        """Fetch a requested link and return its visible text for extraction."""
+        import httpx
+
+        from music_event_bot.discovery.feeds import _clean_feed_html
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=10,
+                follow_redirects=True,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/126.0.0.0 Safari/537.36"
+                    )
+                },
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning("Could not fetch requested link %s: %s", url, exc)
+            return None
+        text = _clean_feed_html(response.text)
+        return text[:6000] if text else None
 
     async def remind_rsvps(self) -> int:
         """Ping Going/Interested RSVPs roughly a day before their event."""

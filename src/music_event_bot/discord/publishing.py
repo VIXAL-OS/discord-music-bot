@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, timedelta
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,11 @@ from music_event_bot.domain.models import EventRecord
 
 if TYPE_CHECKING:
     from music_event_bot.discord.bot import MusicEventDiscordBot
+
+logger = logging.getLogger(__name__)
+
+# Discord rejects new guild scheduled events once 100 are pending.
+_SCHEDULED_EVENT_CAP_ERROR = 30038
 
 
 def event_marker(event_id: str) -> str:
@@ -74,7 +80,7 @@ class DiscordPublicationGateway:
         self.bot = bot
         self.settings = settings
 
-    async def create_or_find_scheduled_event(self, event: EventRecord) -> int:
+    async def create_or_find_scheduled_event(self, event: EventRecord) -> int | None:
         guild = await self._guild()
         marker = event_marker(event.id)
         for scheduled in await guild.fetch_scheduled_events():
@@ -92,20 +98,33 @@ class DiscordPublicationGateway:
             else starts_at + timedelta(minutes=self.settings.default_event_duration_minutes)
         )
         description = self._scheduled_description(event)
-        scheduled = await guild.create_scheduled_event(
-            name=event.title[:100],
-            description=description[:1000],
-            start_time=starts_at,
-            end_time=ends_at,
-            entity_type=discord.EntityType.external,
-            privacy_level=discord.PrivacyLevel.guild_only,
-            location=f"{event.venue} — {event.location}"[:100],
-            reason=f"Approved music event {event.id}",
-        )
+        try:
+            scheduled = await guild.create_scheduled_event(
+                name=event.title[:100],
+                description=description[:1000],
+                start_time=starts_at,
+                end_time=ends_at,
+                entity_type=discord.EntityType.external,
+                privacy_level=discord.PrivacyLevel.guild_only,
+                location=f"{event.venue} — {event.location}"[:100],
+                reason=f"Approved music event {event.id}",
+            )
+        except discord.HTTPException as exc:
+            if exc.code != _SCHEDULED_EVENT_CAP_ERROR:
+                raise
+            # The guild is at Discord's 100 pending scheduled events cap.
+            # The announcement is the product; the native event is a bonus,
+            # so publish without one rather than jamming the queue.
+            logger.warning(
+                "Guild scheduled-event cap reached; publishing %r without a "
+                "native Scheduled Event",
+                event.title,
+            )
+            return None
         return scheduled.id
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int
+        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int | None
     ) -> int:
         channel = await self._announcement_channel()
         marker = event_marker(event.id)
@@ -121,8 +140,10 @@ class DiscordPublicationGateway:
 
         # The scheduled-event link makes Discord render its native event card
         # with an Interested button alongside the bot's own RSVP buttons.
-        link = self._event_link(scheduled_event_id)
-        content = _role_content(role_ids, f"New show alert!\n{link}")
+        suffix = "New show alert!"
+        if scheduled_event_id is not None:
+            suffix += f"\n{self._event_link(scheduled_event_id)}"
+        content = _role_content(role_ids, suffix)
         allowed_mentions = _role_mentions(role_ids)
         groups = await self.bot.repository.get_rsvps(event.id)
         message = await channel.send(
@@ -136,12 +157,10 @@ class DiscordPublicationGateway:
     async def update_published_event(
         self,
         event: EventRecord,
-        scheduled_event_id: int,
+        scheduled_event_id: int | None,
         announcement_message_id: int,
         role_ids: tuple[int, ...],
     ) -> None:
-        guild = await self._guild()
-        scheduled = await guild.fetch_scheduled_event(scheduled_event_id)
         if event.starts_at is None or not event.venue or not event.location:
             raise ValueError("Published events require a start time, venue, and location")
         starts_at = event.starts_at.astimezone(UTC)
@@ -150,22 +169,27 @@ class DiscordPublicationGateway:
             if event.ends_at
             else starts_at + timedelta(minutes=self.settings.default_event_duration_minutes)
         )
-        await scheduled.edit(
-            name=event.title[:100],
-            description=self._scheduled_description(event)[:1000],
-            start_time=starts_at,
-            end_time=ends_at,
-            location=f"{event.venue} — {event.location}"[:100],
-            reason=f"Updated music event {event.id}",
-        )
+        if scheduled_event_id is not None:
+            guild = await self._guild()
+            scheduled = await guild.fetch_scheduled_event(scheduled_event_id)
+            await scheduled.edit(
+                name=event.title[:100],
+                description=self._scheduled_description(event)[:1000],
+                start_time=starts_at,
+                end_time=ends_at,
+                location=f"{event.venue} — {event.location}"[:100],
+                reason=f"Updated music event {event.id}",
+            )
         from music_event_bot.discord.rsvp import RsvpView, announcement_embed
 
         channel = await self._announcement_channel()
         message = await channel.fetch_message(announcement_message_id)
-        link = self._event_link(scheduled_event_id)
+        suffix = "Updated show listing"
+        if scheduled_event_id is not None:
+            suffix += f"\n{self._event_link(scheduled_event_id)}"
         groups = await self.bot.repository.get_rsvps(event.id)
         await message.edit(
-            content=_role_content(role_ids, f"Updated show listing\n{link}"),
+            content=_role_content(role_ids, suffix),
             embed=announcement_embed(event, groups),
             allowed_mentions=_role_mentions(role_ids),
             # Also backfills RSVP buttons onto announcements posted before

@@ -35,16 +35,25 @@ _SCHEMA: dict[str, Any] = {
 }
 
 
-def _prompt(request_text: str, context: list[tuple[str, str]], now: datetime) -> str:
+def _prompt(
+    request_text: str,
+    context: list[tuple[str, str]],
+    now: datetime,
+    page_text: str | None,
+) -> str:
     context_lines = "\n".join(f"[{author}]: {text}" for author, text in context)
+    page_block = (
+        f"\n\nContent fetched from the linked page:\n{page_text}" if page_text else ""
+    )
     return (
         "A Discord user asked a music-event bot to queue an event for review. "
-        "Work out which real-world event they mean from their request and the "
-        "recent channel conversation.\n\n"
+        "Work out which real-world event they mean from their request, the "
+        "recent channel conversation, and any linked page content.\n\n"
         f"Today is {now:%A, %B %d, %Y} ({now.tzinfo}). Dates without a year mean "
         "the next occurrence.\n\n"
         f"Recent channel messages (oldest first):\n{context_lines or '(none)'}\n\n"
-        f"The request: {request_text or '(just a mention, no text)'}\n\n"
+        f"The request: {request_text or '(just a mention, no text)'}"
+        f"{page_block}\n\n"
         "Rules:\n"
         "- found=true only when a concrete event (artist/show plus at least one "
         "of venue or date) is identifiable; otherwise found=false and leave "
@@ -79,7 +88,11 @@ class RequestEventParser:
         return self._client
 
     async def extract(
-        self, request_text: str, context: list[tuple[str, str]], now: datetime
+        self,
+        request_text: str,
+        context: list[tuple[str, str]],
+        now: datetime,
+        page_text: str | None = None,
     ) -> dict[str, Any] | None:
         client = self._resolve_client()
         if client is None:
@@ -96,7 +109,10 @@ class RequestEventParser:
                     "conversation does not support."
                 ),
                 messages=[
-                    {"role": "user", "content": _prompt(request_text, context, now)}
+                    {
+                        "role": "user",
+                        "content": _prompt(request_text, context, now, page_text),
+                    }
                 ],
                 output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
             )

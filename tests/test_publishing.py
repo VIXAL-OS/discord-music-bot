@@ -295,6 +295,29 @@ async def test_catchall_pinged_when_nothing_matches_at_all(
 
 
 @pytest.mark.asyncio
+async def test_publish_survives_scheduled_event_cap(repository, complete_event) -> None:
+    """At Discord's 100-event cap the announcement still goes out."""
+
+    class CappedGateway(FakePublicationGateway):
+        async def create_or_find_scheduled_event(self, event: EventRecord) -> int | None:
+            self.scheduled_calls.append(event.id)
+            return None
+
+    event = await _approved_event(repository, complete_event)
+    gateway = CappedGateway()
+    service = PublicationService(repository, gateway)
+
+    published = await service.publish(event.id)
+    assert published.status is EventStatus.PUBLISHED
+    assert gateway.announcement_calls[0][0] == event.id
+    assert gateway.announcement_calls[0][2] is None
+    publication = await repository.get_publication(event.id)
+    assert publication is not None
+    assert publication["scheduled_event_id"] is None
+    assert publication["announcement_message_id"] is not None
+
+
+@pytest.mark.asyncio
 async def test_last_resort_pings_music_catchall_only(repository, complete_event) -> None:
     from dataclasses import replace
 

@@ -15,16 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 class PublicationGateway(Protocol):
-    async def create_or_find_scheduled_event(self, event: EventRecord) -> int: ...
+    async def create_or_find_scheduled_event(self, event: EventRecord) -> int | None: ...
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int
+        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int | None
     ) -> int: ...
 
     async def update_published_event(
         self,
         event: EventRecord,
-        scheduled_event_id: int,
+        scheduled_event_id: int | None,
         announcement_message_id: int,
         role_ids: tuple[int, ...],
     ) -> None: ...
@@ -91,8 +91,12 @@ class PublicationService:
                 if scheduled_id:
                     scheduled_event_id = int(scheduled_id)
                 else:
+                    # None when the guild is at Discord's scheduled-event cap:
+                    # the announcement still goes out, just without the
+                    # native event link.
                     scheduled_event_id = await self.gateway.create_or_find_scheduled_event(event)
-                    await self.repository.record_scheduled_event(event_id, scheduled_event_id)
+                    if scheduled_event_id is not None:
+                        await self.repository.record_scheduled_event(event_id, scheduled_event_id)
 
                 announcement_id = publication.get("announcement_message_id")
                 if announcement_id:
@@ -158,12 +162,12 @@ class PublicationService:
                 return
             scheduled_id = publication.get("scheduled_event_id")
             announcement_id = publication.get("announcement_message_id")
-            if not scheduled_id or not announcement_id:
+            if not announcement_id:
                 return
             role_ids = await self._roles_for(event)
             await self.gateway.update_published_event(
                 event,
-                int(scheduled_id),
+                int(scheduled_id) if scheduled_id else None,
                 int(announcement_id),
                 role_ids,
             )

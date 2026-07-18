@@ -1031,9 +1031,11 @@ class EventRepository:
                 (event_id,),
             )
             row = await cursor.fetchone()
-            if row is None or not row["scheduled_event_id"] or not row["announcement_message_id"]:
+            # The announcement is required; the Scheduled Event is optional
+            # (the guild may be at Discord's pending-event cap).
+            if row is None or not row["announcement_message_id"]:
                 await connection.rollback()
-                raise ValueError("Publication is missing its Scheduled Event or announcement")
+                raise ValueError("Publication is missing its announcement")
             await connection.execute(
                 "UPDATE publications SET state = 'published', updated_at = ? WHERE event_id = ?",
                 (now, event_id),
