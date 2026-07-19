@@ -15,6 +15,7 @@ from music_event_bot.services.orchestration import DiscoveryOrchestrator
 from music_event_bot.storage.database import Database
 from music_event_bot.storage.repositories import EventRepository
 from music_event_bot.taste.enrichment import TasteEnricher
+from music_event_bot.taste.event_genres import EventGenreClassifier
 from music_event_bot.taste.manual import profile_from_settings
 from music_event_bot.taste.spotify import SpotifyTasteImporter
 
@@ -79,7 +80,15 @@ class Application:
             sources.append(SquarespaceSource(settings.squarespace_event_urls))
         if settings.arcane_city_enabled:
             sources.append(ArcaneCitySource())
+        # The vocabulary is whatever currently routes to a role, so genres added
+        # to genre_roles become assignable without touching this code.
+        genre_classifier = EventGenreClassifier(settings, await repository.known_genres())
         discovery = DiscoveryOrchestrator(
-            settings, repository, sources, profile, artwork=ArtworkResolver()
+            settings,
+            repository,
+            sources,
+            profile,
+            artwork=ArtworkResolver(),
+            genres=genre_classifier,
         )
         return cls(settings, database, repository, profile, sources, discovery)

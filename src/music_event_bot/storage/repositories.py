@@ -1164,6 +1164,17 @@ class EventRepository:
         ranked = sorted(votes.items(), key=lambda item: (-item[1][0], item[1][1]))
         return tuple(role_id for role_id, _ in ranked)
 
+    async def known_genres(self) -> tuple[str, ...]:
+        """Every genre that resolves to a community role.
+
+        This is the curated vocabulary the genre classifier is allowed to
+        assign: a label outside it maps to no role, so guessing one would leave
+        the event in the catch-all anyway.
+        """
+        async with self.database.connect() as connection:
+            cursor = await connection.execute("SELECT genre FROM genre_roles ORDER BY genre")
+            return tuple(str(row["genre"]) for row in await cursor.fetchall())
+
     async def store_taste_preferences(self, kind: str, values: set[str], source: str) -> None:
         """Merge preference values for a kind/source; existing rows persist."""
         now = _now().isoformat()

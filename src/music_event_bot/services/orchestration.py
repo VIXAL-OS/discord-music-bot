@@ -7,10 +7,11 @@ from datetime import UTC, datetime, timedelta
 from music_event_bot.config import Settings
 from music_event_bot.discovery.artwork import ArtworkResolver
 from music_event_bot.discovery.base import DiscoveryWindow, EventSource
-from music_event_bot.domain.models import DiscoveredEvent, TasteProfile
+from music_event_bot.domain.models import DiscoveredEvent, EventRecord, TasteProfile
 from music_event_bot.domain.normalization import normalize_text
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.storage.repositories import EventRepository
+from music_event_bot.taste.event_genres import EventGenreClassifier
 
 
 def _is_trusted_venue(venue: str | None, fragments: tuple[str, ...]) -> bool:
@@ -56,6 +57,7 @@ class DiscoverySummary:
     ignored_below_score: int
     source_errors: dict[str, str]
     artwork_found: int = 0
+    genres_assigned: int = 0
 
 
 class DiscoveryOrchestrator:
@@ -66,12 +68,33 @@ class DiscoveryOrchestrator:
         sources: list[EventSource],
         profile: TasteProfile,
         artwork: ArtworkResolver | None = None,
+        genres: EventGenreClassifier | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.sources = sources
         self.profile = profile
         self.artwork = artwork
+        self.genres = genres
+
+    async def _classify_genres(self, events: list[EventRecord]) -> int:
+        """Ask Claude about events whose own text named no genre."""
+        if self.genres is None or not events:
+            return 0
+        entries = [
+            {
+                "id": event.id,
+                "title": event.title,
+                "venue": event.venue or "",
+                "description": (event.description or "")[:600],
+            }
+            for event in events
+        ]
+        assigned = await self.genres.classify(entries)
+        for event_id, genres in assigned.items():
+            await self.repository.update_event(event_id, genres=list(genres))
+            logger.info("Classified %s as %s", event_id, ", ".join(genres))
+        return len(assigned)
 
     async def run(self) -> DiscoverySummary:
         started_at = datetime.now(UTC)
@@ -90,6 +113,7 @@ class DiscoveryOrchestrator:
         # is not provably generic until a second event turns up carrying it, and
         # by then the first event would already own it.
         pending_artwork: list[tuple[str, str]] = []
+        needs_genres: list[EventRecord] = []
 
         for source in self.sources:
             try:
@@ -107,6 +131,12 @@ class DiscoveryOrchestrator:
             address_book = self.settings.venue_address_map
             for event in source_events:
                 event = _apply_address_book(event, address_book)
+                # Before scoring, so a listing that names its genres in prose is
+                # judged on them rather than being gated as though it had none.
+                if self.genres is not None and not event.genres:
+                    named = self.genres.from_text(event.title, event.description)
+                    if named:
+                        event = replace(event, genres=named)
                 score = score_event(
                     event,
                     self.profile,
@@ -140,6 +170,13 @@ class DiscoveryOrchestrator:
                     image = await self.artwork.resolve(event)
                     if image:
                         pending_artwork.append((result.event.id, image))
+                # Whatever the text did not name outright goes to Claude, but only
+                # for events that actually cleared the gate -- asking about every
+                # rejected listing would be thousands of calls a run for nothing.
+                if self.genres is not None and not result.event.genres:
+                    needs_genres.append(result.event)
+
+        genres_assigned = await self._classify_genres(needs_genres)
 
         if pending_artwork:
             shared = self.artwork.shared_images if self.artwork is not None else frozenset()
@@ -176,6 +213,7 @@ class DiscoveryOrchestrator:
             ignored_below_score=ignored,
             source_errors=errors,
             artwork_found=artwork_found,
+            genres_assigned=genres_assigned,
         )
         await self.repository.record_job_run(
             "discovery",
@@ -187,6 +225,7 @@ class DiscoveryOrchestrator:
                 "sources_added": sources_added,
                 "ignored_below_score": ignored,
                 "artwork_found": artwork_found,
+                "genres_assigned": genres_assigned,
                 "source_errors": errors,
                 "source_diagnostics": source_diagnostics,
             },
