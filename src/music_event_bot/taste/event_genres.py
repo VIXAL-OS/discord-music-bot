@@ -64,6 +64,12 @@ _AMBIGUOUS_ALONE = frozenset(
 # Longest vocabulary entries are four words ("melodic hardcore punk revival").
 _MAX_PHRASE_WORDS = 4
 
+# Routes to the "Other Events" community. A non-music listing has to arrive
+# carrying this label: with no genres at all, publication falls through to the
+# music catch-all instead, which is how a mushroom walk ends up pinging
+# people who came for bands.
+_NON_MUSIC_GENRE = "other events"
+
 _MAX_GENRES = 5
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -135,17 +141,21 @@ def _prompt(entries: list[dict[str, str]], vocabulary: tuple[str, ...]) -> str:
         for entry in entries
     )
     return (
-        "Assign music genres to each event below, based on its title, venue, and "
+        "Assign genres to each event below, based on its title, venue, and "
         "description.\n\n"
         "Rules:\n"
         "1. Choose only from the allowed genre list, copied exactly. A label "
         "outside the list routes the event nowhere, so it is worse than omitting "
         "it.\n"
         "2. Return at most 4 genres per event, most characteristic first.\n"
-        "3. Return an empty array when the event is not a music event (a reading, "
-        "a walk, a market, a film screening with no live score) or when the text "
-        "gives no real signal. Guessing is worse than leaving it blank.\n"
-        "4. Judge the event, not the venue's usual booking.\n\n"
+        f'3. Return exactly ["{_NON_MUSIC_GENRE}"] when the listing is not a music '
+        "event at all (a reading, a walk, a market, a film screening with no live "
+        "score). That label routes it to the community that wants non-music "
+        "listings, so it is the useful answer, not a way of declining.\n"
+        "4. Return an empty array only when the event IS music but the text gives "
+        "no real signal about which kind. Guessing is worse than leaving it blank; "
+        "a blank still reaches the general music audience.\n"
+        "5. Judge the event, not the venue's usual booking.\n\n"
         f"Allowed genres:\n{', '.join(vocabulary)}\n\n"
         f"Events:\n\n{listing}"
     )

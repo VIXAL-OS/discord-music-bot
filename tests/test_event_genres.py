@@ -105,13 +105,36 @@ async def test_genres_outside_the_vocabulary_are_dropped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_empty_answer_assigns_nothing() -> None:
-    """Non-music events must come back blank rather than guessed into a bucket."""
+async def test_a_blank_answer_assigns_nothing() -> None:
+    """Music with no discernible genre stays blank and reaches the music catch-all."""
     client = _FakeClient({"events": [{"id": "e1", "genres": []}]})
+    result = await _classifier(client).classify(
+        [{"id": "e1", "title": "Vinyl Club", "venue": "Gallery", "description": "a meeting"}]
+    )
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_non_music_events_are_labelled_rather_than_left_blank() -> None:
+    """A blank would fall through to the music catch-all and ping the wrong room.
+
+    "Other Events" only receives listings that arrive carrying its own label, so
+    the classifier has to say so outright.
+    """
+    client = _FakeClient({"events": [{"id": "e1", "genres": ["other events"]}]})
     result = await _classifier(client).classify(
         [{"id": "e1", "title": "Mushroom Walk", "venue": "Frick", "description": "a walk"}]
     )
-    assert result == {}
+    assert result == {"e1": ("other events",)}
+
+
+def test_the_prompt_asks_for_the_non_music_label() -> None:
+    from music_event_bot.taste.event_genres import _prompt
+
+    prompt = _prompt(
+        [{"id": "e1", "title": "t", "venue": "v", "description": "d"}], VOCAB
+    )
+    assert "other events" in prompt
 
 
 @pytest.mark.asyncio
