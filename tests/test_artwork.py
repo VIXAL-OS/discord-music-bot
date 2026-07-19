@@ -239,3 +239,24 @@ async def test_banner_shared_by_two_shows_is_refused_after_the_first() -> None:
         second = await resolver.resolve(_event("https://venue.test/event/b"))
     assert first == "https://cdn.test/banner.jpg"
     assert second is None
+    # The first caller was handed it before the duplicate proved it generic, so
+    # callers that can still take it back are told which images to drop.
+    assert resolver.shared_images == {"https://cdn.test/banner.jpg"}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_unshared_art_is_not_reported_as_venue_art() -> None:
+    _plain_root("https://venue.test")
+    respx.get("https://venue.test/event/a").mock(
+        return_value=httpx.Response(
+            200, text='<meta property="og:image" content="https://cdn.test/flyer.jpg">'
+        )
+    )
+    respx.get("https://cdn.test/flyer.jpg").mock(
+        return_value=httpx.Response(200, headers={"content-type": "image/jpeg"}, content=b"x")
+    )
+    async with httpx.AsyncClient() as client:
+        resolver = ArtworkResolver(client=client)
+        assert await resolver.resolve(_event("https://venue.test/event/a"))
+        assert resolver.shared_images == frozenset()

@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, replace
 
 from music_event_bot.config import Settings
+from music_event_bot.discovery.arcane import ArcaneCitySource
 from music_event_bot.discovery.artwork import ArtworkResolver
 from music_event_bot.discovery.base import EventSource
 from music_event_bot.discovery.feeds import CalendarSource, FeedSource
@@ -76,6 +77,8 @@ class Application:
             )
         if settings.squarespace_event_urls:
             sources.append(SquarespaceSource(settings.squarespace_event_urls))
+        if settings.arcane_city_enabled:
+            sources.append(ArcaneCitySource())
         discovery = DiscoveryOrchestrator(
             settings, repository, sources, profile, artwork=ArtworkResolver()
         )

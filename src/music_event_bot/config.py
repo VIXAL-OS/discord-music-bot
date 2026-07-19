@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     ics_urls: str = ""
     rss_urls: str = ""
     squarespace_urls: str = ""
+    # arcane.city is a whole-city Pittsburgh listing, so it is opt-in and subject
+    # to the affinity gate rather than being trusted like a venue's own feed.
+    arcane_city_enabled: bool = False
     # JSON object mapping a feed URL fragment (e.g. a hostname) to a default
     # location for single-venue calendars whose events omit venue/location:
     # {"poetrymillvale.com": "Poetry Lounge, 313 North Avenue, Millvale, PA"}

@@ -61,10 +61,14 @@ def _is_index_page(url: str) -> bool:
     return path in {entry.rstrip("/") for entry in _INDEX_PATHS}
 
 
-def _candidate_pages(event: DiscoveredEvent) -> list[str]:
-    """Listing pages worth checking, best first."""
+def candidate_pages(description: str | None, *urls: str | None) -> list[str]:
+    """Listing pages worth checking, best first.
+
+    Takes the raw description and any known page URLs rather than an event, so
+    stored records (which carry ``url`` instead of ``source_url``) can reuse it.
+    """
     seen: dict[str, None] = {}
-    for raw in (*_LINK_RE.findall(event.description or ""), event.source_url or ""):
+    for raw in (*_LINK_RE.findall(description or ""), *(url or "" for url in urls)):
         url = raw.rstrip(".,);")
         if not url:
             continue
@@ -77,6 +81,10 @@ def _candidate_pages(event: DiscoveredEvent) -> list[str]:
         key=lambda url: any(bad in urlsplit(url).netloc.lower() for bad in _DEPRIORITISED_HOSTS),
     )
     return ranked[:_MAX_CANDIDATES]
+
+
+def _candidate_pages(event: DiscoveredEvent) -> list[str]:
+    return candidate_pages(event.description, event.source_url)
 
 
 def extract_og_image(html: str, page_url: str) -> str | None:
@@ -98,9 +106,22 @@ class ArtworkResolver:
         self._verified: dict[str, bool] = {}
         self._site_defaults: dict[str, str | None] = {}
         self._claimed: dict[str, str] = {}
+        self._shared: set[str] = set()
+
+    @property
+    def shared_images(self) -> frozenset[str]:
+        """Images this run saw on more than one page, i.e. venue art.
+
+        The first page to reach one is handed it before any duplicate proves it
+        generic, so callers that can defer their writes should drop anything
+        listed here before committing.
+        """
+        return frozenset(self._shared)
 
     async def resolve(self, event: DiscoveredEvent) -> str | None:
-        pages = _candidate_pages(event)
+        return await self.resolve_pages(_candidate_pages(event))
+
+    async def resolve_pages(self, pages: list[str]) -> str | None:
         if not pages:
             return None
         owned = self._client is None
@@ -133,6 +154,7 @@ class ArtworkResolver:
         # event to claim it keeps it -- that one lands in the daily image audit.
         owner = self._claimed.setdefault(image, page)
         if owner != page:
+            self._shared.add(image)
             logger.info(
                 "Artwork %s is shared by %s and %s; treating as venue art", image, owner, page
             )

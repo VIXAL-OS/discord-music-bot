@@ -86,6 +86,10 @@ class DiscoveryOrchestrator:
         discovered = created = sources_added = ignored = artwork_found = 0
         errors: dict[str, str] = {}
         source_diagnostics: dict[str, object] = {}
+        # Artwork is written only once every source has run: a venue's house image
+        # is not provably generic until a second event turns up carrying it, and
+        # by then the first event would already own it.
+        pending_artwork: list[tuple[str, str]] = []
 
         for source in self.sources:
             try:
@@ -135,8 +139,20 @@ class DiscoveryOrchestrator:
                 if self.artwork is not None and result.event.image_url is None:
                     image = await self.artwork.resolve(event)
                     if image:
-                        await self.repository.update_event(result.event.id, image_url=image)
-                        artwork_found += 1
+                        pending_artwork.append((result.event.id, image))
+
+        if pending_artwork:
+            shared = self.artwork.shared_images if self.artwork is not None else frozenset()
+            for event_id, image in pending_artwork:
+                if image in shared:
+                    logger.info(
+                        "Dropping artwork %s for %s: another event carries the same image",
+                        image,
+                        event_id,
+                    )
+                    continue
+                await self.repository.update_event(event_id, image_url=image)
+                artwork_found += 1
 
         deduped = await self.repository.dedupe_tour_events(
             self.settings.home_point, self.settings.max_travel_radius_miles

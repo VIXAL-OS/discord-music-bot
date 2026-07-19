@@ -55,6 +55,22 @@ def _parser() -> argparse.ArgumentParser:
         help="Filter by lifecycle status; repeat to include multiple statuses",
     )
     subparsers.add_parser("scrape-once", help="Run all enabled discovery sources once")
+    backfill_parser = subparsers.add_parser(
+        "backfill-artwork",
+        help="Find artwork for stored events that have none (reports without --apply)",
+    )
+    backfill_parser.add_argument(
+        "--status",
+        action="append",
+        choices=[status.value for status in EventStatus],
+        help="Limit to these statuses; repeat to include several "
+        "(default: published, approved, pending_review, incomplete, publish_failed)",
+    )
+    backfill_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the images found; without it nothing is modified",
+    )
     subparsers.add_parser("review-sync", help="Connect to Discord and reconcile review cards")
     subparsers.add_parser("bot", help="Run the Discord bot and scheduler")
     spotify_parser = subparsers.add_parser(
@@ -146,6 +162,16 @@ async def _run(args: argparse.Namespace) -> None:
         return
     if args.command == "scrape-once":
         summary = await app.discovery.run()
+        print(json.dumps(asdict(summary), indent=2, default=str))
+        return
+    if args.command == "backfill-artwork":
+        from music_event_bot.services.artwork_backfill import ArtworkBackfill
+
+        backfill = ArtworkBackfill(app.repository)
+        statuses = tuple(EventStatus(value) for value in (args.status or []))
+        summary = await backfill.run(
+            **({"statuses": statuses} if statuses else {}), apply=args.apply
+        )
         print(json.dumps(asdict(summary), indent=2, default=str))
         return
 
