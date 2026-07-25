@@ -61,6 +61,132 @@ class RecordingRepository:
 
 
 @pytest.mark.asyncio
+async def test_out_of_radius_events_are_dropped_for_every_source(complete_event) -> None:
+    """The radius filter used to live in the Ticketmaster parser only.
+
+    Every other source -- ICS, RSS, Squarespace, arcane, AXS/TicketWeb -- ingested
+    at any distance. Note this only bites past max_travel_radius_miles (350 by
+    default), which is wide enough to admit New York at 308 mi; the default is a
+    separate calibration question from where the check lives.
+    """
+    from dataclasses import replace as dc_replace
+
+    settings = Settings(_env_file=None, preferred_genres="indie")
+    nearby = dc_replace(
+        complete_event,
+        source_event_id="near-1",
+        title="Nearby Show",
+        venue_latitude=40.4406,  # Pittsburgh
+        venue_longitude=-79.9959,
+    )
+    chicago = dc_replace(
+        complete_event,
+        source_event_id="far-1",
+        title="Chicago Show",
+        venue_latitude=41.8781,  # ~416 mi from home
+        venue_longitude=-87.6298,
+    )
+    # An ICS feed, not Ticketmaster: previously nothing here checked distance.
+    source = StaticSource("calendar", [nearby, chicago], requires_affinity=True)
+    repository = RecordingRepository()
+    orchestrator = DiscoveryOrchestrator(
+        settings, cast(EventRepository, repository), [source], TasteProfile(genres=("indie",))
+    )
+
+    summary = await orchestrator.run()
+
+    assert summary.ignored_out_of_radius == 1
+    assert [event.title for event, _ in repository.upserts] == ["Nearby Show"]
+
+
+@pytest.mark.asyncio
+async def test_events_without_coordinates_survive_the_radius_filter(complete_event) -> None:
+    """DIY listings routinely carry no coordinates; absent geography is not distance."""
+    from dataclasses import replace as dc_replace
+
+    settings = Settings(_env_file=None, preferred_genres="indie")
+    unlocated = dc_replace(complete_event, source_event_id="diy-1", title="Basement Show")
+    assert unlocated.venue_latitude is None
+    source = StaticSource("calendar", [unlocated], requires_affinity=True)
+    repository = RecordingRepository()
+    orchestrator = DiscoveryOrchestrator(
+        settings, cast(EventRepository, repository), [source], TasteProfile(genres=("indie",))
+    )
+
+    summary = await orchestrator.run()
+
+    assert summary.ignored_out_of_radius == 0
+    assert [event.title for event, _ in repository.upserts] == ["Basement Show"]
+
+
+@pytest.mark.asyncio
+async def test_blocklist_rejects_any_act_on_the_bill(complete_event, tmp_path) -> None:
+    """A blocked opener keeps the whole show out, not just a blocked headliner."""
+    import json
+    from dataclasses import replace as dc_replace
+
+    from music_event_bot.domain.blocklist import Blocklist
+
+    path = tmp_path / "blocked-artists.json"
+    path.write_text(
+        json.dumps([{"name": "Blocked Act", "reason": "operator's reason"}]),
+        encoding="utf-8",
+    )
+    blocklist = Blocklist.load(path)
+
+    settings = Settings(_env_file=None, preferred_genres="indie")
+    as_support = dc_replace(
+        complete_event,
+        source_event_id="bill-1",
+        title="Headline Act, Blocked Act, Third Act",
+        artist="Headline Act",
+        artists=("Headline Act", "Blocked Act", "Third Act"),
+    )
+    clean = dc_replace(complete_event, source_event_id="bill-2", title="Unrelated Show")
+    source = StaticSource("calendar", [as_support, clean], requires_affinity=True)
+    repository = RecordingRepository()
+    orchestrator = DiscoveryOrchestrator(
+        settings,
+        cast(EventRepository, repository),
+        [source],
+        TasteProfile(genres=("indie",)),
+        blocklist=blocklist,
+    )
+
+    summary = await orchestrator.run()
+
+    assert summary.blocked_artists == 1
+    assert [event.title for event, _ in repository.upserts] == ["Unrelated Show"]
+
+
+def test_blocklist_title_fallback_only_without_a_lineup() -> None:
+    """Title matching is a last resort: it also catches unrelated marketing copy."""
+    from music_event_bot.domain.blocklist import Blocklist
+
+    entries = Blocklist(entries={"blocked act": ("Blocked Act", "operator's reason")})
+
+    no_lineup = DiscoveredEvent(
+        source_name="t",
+        source_event_id="1",
+        title="Blocked Act and friends",
+        artist=None,
+        artists=(),
+    )
+    assert entries.match(no_lineup) is not None
+
+    # Source gave a lineup that does not include the blocked act; the title
+    # mentioning it (a support-act rumour, a venue's copy) must not block.
+    with_lineup = DiscoveredEvent(
+        source_name="t",
+        source_event_id="2",
+        title="Blocked Act tribute night",
+        artist="Some Cover Band",
+        artists=("Some Cover Band",),
+    )
+    assert entries.match(with_lineup) is None
+
+
+@pytest.mark.asyncio
 async def test_trusted_venue_bypasses_affinity_gate(complete_event) -> None:
     from dataclasses import replace as dc_replace
 

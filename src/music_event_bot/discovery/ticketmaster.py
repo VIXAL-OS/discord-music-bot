@@ -16,7 +16,6 @@ from music_event_bot.domain.geography import (
     CoverageCell,
     GeoPoint,
     geohash_encode,
-    haversine_miles,
 )
 from music_event_bot.domain.models import DiscoveredEvent
 
@@ -181,10 +180,8 @@ class TicketmasterSource:
         venue_data = venues[0] if venues and isinstance(venues[0], dict) else {}
         venue = venue_data.get("name")
         coordinates = self._parse_coordinates(venue_data.get("location"))
-        if coordinates is not None:
-            distance = haversine_miles(self.settings.home_point, coordinates)
-            if distance > self.settings.max_travel_radius_miles:
-                return None
+        # Out-of-radius venues are dropped during ingest, for every source at once
+        # (see DiscoveryService._within_travel_radius) rather than here.
 
         timezone_name = venue_data.get("timezone") or self.settings.default_timezone
         try:

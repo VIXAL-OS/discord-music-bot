@@ -10,6 +10,7 @@ from music_event_bot.discovery.base import EventSource
 from music_event_bot.discovery.feeds import CalendarSource, FeedSource
 from music_event_bot.discovery.squarespace import SquarespaceSource
 from music_event_bot.discovery.ticketmaster import TicketmasterSource
+from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.models import TasteProfile
 from music_event_bot.services.orchestration import DiscoveryOrchestrator
 from music_event_bot.storage.database import Database
@@ -83,6 +84,9 @@ class Application:
         # The vocabulary is whatever currently routes to a role, so genres added
         # to genre_roles become assignable without touching this code.
         genre_classifier = EventGenreClassifier(settings, await repository.known_genres())
+        blocklist = Blocklist.load(settings.blocked_artists_path)
+        if blocklist:
+            logger.info("Blocking %d artists from review", len(blocklist.entries))
         discovery = DiscoveryOrchestrator(
             settings,
             repository,
@@ -90,5 +94,6 @@ class Application:
             profile,
             artwork=ArtworkResolver(),
             genres=genre_classifier,
+            blocklist=blocklist,
         )
         return cls(settings, database, repository, profile, sources, discovery)

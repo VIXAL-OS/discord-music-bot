@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from music_event_bot.config import Settings
 from music_event_bot.discovery.artwork import ArtworkResolver
 from music_event_bot.discovery.base import DiscoveryWindow, EventSource
+from music_event_bot.domain.blocklist import Blocklist
+from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.models import DiscoveredEvent, EventRecord, TasteProfile
 from music_event_bot.domain.normalization import normalize_text
 from music_event_bot.domain.scoring import score_event
@@ -19,6 +21,28 @@ def _is_trusted_venue(venue: str | None, fragments: tuple[str, ...]) -> bool:
         return False
     normalized = normalize_text(venue)
     return any(fragment in normalized for fragment in fragments)
+
+
+def _within_travel_radius(
+    event: DiscoveredEvent, home: GeoPoint, max_radius_miles: int
+) -> bool:
+    """False when the venue is provably too far to be worth reviewing.
+
+    Ticketmaster applied this while parsing, so every other source -- ICS, RSS,
+    Squarespace, arcane, AXS/TicketWeb -- ingested at any distance and reached
+    review on affinity alone (a Manhattan show scored 90 on an artist match).
+    The gate compares affinity_score, which excludes location_bonus by
+    construction, so scoring could never hold those back on its own.
+
+    Events whose venue has no coordinates are kept: absent geography is not
+    evidence of distance, and DIY listings frequently carry none.
+    """
+    if max_radius_miles <= 0:
+        return True
+    if event.venue_latitude is None or event.venue_longitude is None:
+        return True
+    venue_point = GeoPoint(event.venue_latitude, event.venue_longitude)
+    return haversine_miles(home, venue_point) <= max_radius_miles
 
 
 def _apply_address_book(event: DiscoveredEvent, book: dict[str, str]) -> DiscoveredEvent:
@@ -58,6 +82,8 @@ class DiscoverySummary:
     source_errors: dict[str, str]
     artwork_found: int = 0
     genres_assigned: int = 0
+    ignored_out_of_radius: int = 0
+    blocked_artists: int = 0
 
 
 class DiscoveryOrchestrator:
@@ -69,6 +95,7 @@ class DiscoveryOrchestrator:
         profile: TasteProfile,
         artwork: ArtworkResolver | None = None,
         genres: EventGenreClassifier | None = None,
+        blocklist: Blocklist | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -76,6 +103,7 @@ class DiscoveryOrchestrator:
         self.profile = profile
         self.artwork = artwork
         self.genres = genres
+        self.blocklist = blocklist or Blocklist()
 
     async def _classify_genres(self, events: list[EventRecord]) -> int:
         """Ask Claude about events whose own text named no genre."""
@@ -107,6 +135,7 @@ class DiscoveryOrchestrator:
             default_event_duration_minutes=self.settings.default_event_duration_minutes,
         )
         discovered = created = sources_added = ignored = artwork_found = 0
+        out_of_radius = blocked = 0
         errors: dict[str, str] = {}
         source_diagnostics: dict[str, object] = {}
         # Artwork is written only once every source has run: a venue's house image
@@ -131,6 +160,25 @@ class DiscoveryOrchestrator:
             address_book = self.settings.venue_address_map
             for event in source_events:
                 event = _apply_address_book(event, address_book)
+                blocked_match = self.blocklist.match(event)
+                if blocked_match is not None:
+                    logger.info(
+                        "Blocked %r from %s: %s (%s, matched on %s)",
+                        event.title,
+                        source.name,
+                        blocked_match.name,
+                        blocked_match.reason,
+                        blocked_match.matched_on,
+                    )
+                    blocked += 1
+                    continue
+                if not _within_travel_radius(
+                    event,
+                    self.settings.home_point,
+                    self.settings.max_travel_radius_miles,
+                ):
+                    out_of_radius += 1
+                    continue
                 # Before scoring, so a listing that names its genres in prose is
                 # judged on them rather than being gated as though it had none.
                 if self.genres is not None and not event.genres:
@@ -214,6 +262,8 @@ class DiscoveryOrchestrator:
             source_errors=errors,
             artwork_found=artwork_found,
             genres_assigned=genres_assigned,
+            ignored_out_of_radius=out_of_radius,
+            blocked_artists=blocked,
         )
         await self.repository.record_job_run(
             "discovery",
@@ -224,6 +274,8 @@ class DiscoveryOrchestrator:
                 "created": created,
                 "sources_added": sources_added,
                 "ignored_below_score": ignored,
+                "ignored_out_of_radius": out_of_radius,
+                "blocked_artists": blocked,
                 "artwork_found": artwork_found,
                 "genres_assigned": genres_assigned,
                 "source_errors": errors,
