@@ -10,6 +10,7 @@ from pathlib import Path
 
 from music_event_bot.app import Application
 from music_event_bot.config import Settings
+from music_event_bot.discovery.images import is_publishable_image
 from music_event_bot.domain.models import EventStatus
 from music_event_bot.storage.database import Database
 from music_event_bot.taste.spotify import authorize_spotify
@@ -20,6 +21,31 @@ def _positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
     return parsed
+
+
+async def _verify_image_renders(url: str) -> None:
+    """Reject artwork Discord would render as a blank embed.
+
+    Mirrors ArtworkResolver._renders: some hosts serve flyers as
+    application/octet-stream, which returns 200 but embeds as nothing.
+    """
+    import httpx
+
+    from music_event_bot.discovery.artwork import _BROWSER_UA
+
+    async with httpx.AsyncClient(
+        follow_redirects=True, timeout=20.0, headers={"User-Agent": _BROWSER_UA}
+    ) as client:
+        try:
+            response = await client.get(url, headers={"Range": "bytes=0-1023"})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ValueError(f"Could not fetch {url}: {exc}") from None
+        content_type = response.headers.get("content-type", "")
+        if not content_type.lower().startswith("image/"):
+            raise ValueError(
+                f"Refusing {url}: content-type is {content_type!r}, not an image type"
+            )
 
 
 def _write_refresh_token(path: Path, refresh_token: str) -> None:
@@ -70,6 +96,17 @@ def _parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="Write the images found; without it nothing is modified",
+    )
+    image_parser = subparsers.add_parser(
+        "set-image",
+        help="Replace one event's artwork; edits the announcement in place when published",
+    )
+    image_parser.add_argument("event_id", help="Event id from `events`")
+    image_parser.add_argument("url", help="Image URL to store")
+    image_parser.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Skip the content-type fetch; URL-level placeholder rules still apply",
     )
     subparsers.add_parser("review-sync", help="Connect to Discord and reconcile review cards")
     subparsers.add_parser("bot", help="Run the Discord bot and scheduler")
@@ -173,6 +210,39 @@ async def _run(args: argparse.Namespace) -> None:
             **({"statuses": statuses} if statuses else {}), apply=args.apply
         )
         print(json.dumps(asdict(summary), indent=2, default=str))
+        return
+
+    if args.command == "set-image":
+        event = await app.repository.get_event(args.event_id)
+        if event is None:
+            raise ValueError(f"No such event: {args.event_id}")
+        if not is_publishable_image(args.url):
+            raise ValueError(
+                f"Refusing {args.url}: matches a placeholder or unrenderable-suffix rule"
+            )
+        if not args.skip_verify:
+            await _verify_image_renders(args.url)
+        previous = event.image_url
+        await app.repository.update_event(event.id, image_url=args.url)
+        result = {
+            "event_id": event.id,
+            "title": event.title,
+            "status": event.status.value,
+            "previous_image_url": previous,
+            "image_url": args.url,
+            "announcement_updated": False,
+        }
+        if event.status is EventStatus.PUBLISHED:
+            settings.require_discord()
+            from music_event_bot.discord.bot import MusicEventDiscordBot
+
+            bot = MusicEventDiscordBot(app)
+            await bot.run_once(
+                lambda: bot.publication_service.update_existing(event.id),
+                "artwork update",
+            )
+            result["announcement_updated"] = True
+        print(json.dumps(result, indent=2, default=str))
         return
 
     settings.require_discord()

@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
 
@@ -124,6 +125,7 @@ class MusicEventDiscordBot(commands.Bot):
         self.request_parser = RequestEventParser(self.settings)
         self._ready_once = False
         self._sync_once = False
+        self._once_action: Callable[[], Awaitable[None]] | None = None
         self._sync_complete = asyncio.Event()
         self._sync_error: Exception | None = None
         self._initial_cycle_task: asyncio.Task[None] | None = None
@@ -146,8 +148,9 @@ class MusicEventDiscordBot(commands.Bot):
         self._ready_once = True
         logger.info("Connected to Discord as %s", self.user)
         if self._sync_once:
+            action = self._once_action or self.sync_reviews
             try:
-                await self.sync_reviews()
+                await action()
             except Exception as exc:
                 self._sync_error = exc
             finally:
@@ -175,10 +178,19 @@ class MusicEventDiscordBot(commands.Bot):
         await super().close()
 
     async def run_sync_once(self) -> None:
+        await self.run_once(self.sync_reviews, "review synchronization")
+
+    async def run_once(
+        self,
+        action: Callable[[], Awaitable[None]],
+        description: str = "the requested action",
+    ) -> None:
+        """Connect, run one action against the live gateway, then disconnect."""
         token = self.settings.discord_token
         if token is None:
             raise RuntimeError("Discord token is missing")
         self._sync_once = True
+        self._once_action = action
         start_task = asyncio.create_task(self.start(token.get_secret_value()))
         sync_task = asyncio.create_task(self._sync_complete.wait())
         done, _pending = await asyncio.wait(
@@ -187,7 +199,7 @@ class MusicEventDiscordBot(commands.Bot):
         if start_task in done and not self._sync_complete.is_set():
             sync_task.cancel()
             await start_task
-            raise RuntimeError("Discord disconnected before review synchronization completed")
+            raise RuntimeError(f"Discord disconnected before {description} completed")
         await self.close()
         await start_task
         if self._sync_error:
