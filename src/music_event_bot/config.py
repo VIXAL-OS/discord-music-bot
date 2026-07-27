@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     # array of {"name": ..., "reason": ...}; see domain/blocklist.py for why
     # this is a hand-maintained roster rather than anything inferred.
     blocked_artists_path: Path = Path("config/blocked-artists.json")
+    # One room's many spellings, collapsed so the title|venue|start fingerprint
+    # does not treat them as different shows. A JSON array of
+    # {"name": ..., "aliases": [...], "note": ...}; see domain/venues.py.
+    venue_aliases_path: Path = Path("config/venue-aliases.json")
 
     ticketmaster_api_key: SecretStr | None = None
     home_latitude: float = 40.4406

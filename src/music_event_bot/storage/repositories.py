@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiosqlite
 
@@ -21,9 +24,13 @@ from music_event_bot.domain.normalization import (
     normalize_genres,
     normalize_text,
     normalize_url,
+    normalize_venue,
 )
 from music_event_bot.domain.scoring import score_event
+from music_event_bot.domain.venues import VenueAliases
 from music_event_bot.storage.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -86,20 +93,77 @@ def _event_from_row(row: aiosqlite.Row) -> EventRecord:
 
 
 class EventRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, venue_aliases: VenueAliases | None = None
+    ) -> None:
         self.database = database
+        self.venue_aliases = venue_aliases or VenueAliases()
 
-    async def upsert_discovered(
-        self, event: DiscoveredEvent, score: ScoreResult
-    ) -> UpsertResult:
-        now = _now()
-        fingerprint = canonical_fingerprint(
+    def _venue_key(self, venue: str | None) -> str:
+        return normalize_venue(venue, self.venue_aliases.entries)
+
+    def _fingerprint(self, event: DiscoveredEvent) -> str:
+        return canonical_fingerprint(
             event.title,
             event.venue,
             event.starts_at,
             source_name=event.source_name,
             source_event_id=event.source_event_id,
+            venue_aliases=self.venue_aliases.entries,
         )
+
+    async def _resync_fingerprint(
+        self, connection: aiosqlite.Connection, event_id: str
+    ) -> None:
+        """Rewrite the stored fingerprint after the fields it is built from change.
+
+        The fingerprint is derived from title, venue and start, and every one of
+        those gets corrected after first sight -- most often when a location
+        arrives late and a row that was ingested with no venue finally gets one.
+        Leaving the key frozen at first-sight values silently removes the row
+        from dedupe forever: the lookup in upsert_discovered can never find it
+        again, so the next source describing that same show creates a second
+        event and a second review card.
+
+        A collision means the row has become a genuine duplicate of one that
+        already exists. Merging here would have to reconcile reviews,
+        publications and RSVPs mid-ingest, so the key is left stale and the pair
+        is logged for `music-event-bot dedupe` to resolve deliberately.
+        """
+        cursor = await connection.execute(
+            "SELECT fingerprint, title, venue, starts_at FROM events WHERE id = ?",
+            (event_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row["starts_at"] is None:
+            return
+        current = canonical_fingerprint(
+            row["title"],
+            row["venue"],
+            datetime.fromisoformat(row["starts_at"]),
+            source_name="",
+            source_event_id="",
+            venue_aliases=self.venue_aliases.entries,
+        )
+        if current == row["fingerprint"]:
+            return
+        try:
+            await connection.execute(
+                "UPDATE events SET fingerprint = ? WHERE id = ?", (current, event_id)
+            )
+        except sqlite3.IntegrityError:
+            logger.info(
+                "Event %s (%s) now fingerprints identically to an existing event; "
+                "leaving its key stale -- run `music-event-bot dedupe` to merge them",
+                event_id,
+                row["title"],
+            )
+
+    async def upsert_discovered(
+        self, event: DiscoveredEvent, score: ScoreResult
+    ) -> UpsertResult:
+        now = _now()
+        fingerprint = self._fingerprint(event)
         genres = normalize_genres(event.genres)
         incomplete = set(event.incomplete_reasons)
         if event.starts_at is None:
@@ -151,6 +215,7 @@ class EventRepository:
                         await self._update_discovered_fields(
                             connection, event_id, event, genres, score, desired_status, now
                         )
+                        await self._resync_fingerprint(connection, event_id)
                 else:
                     cursor = await connection.execute(
                         "SELECT * FROM events WHERE fingerprint = ?", (fingerprint,)
@@ -166,6 +231,7 @@ class EventRepository:
                             await self._fill_missing_fields(
                                 connection, event_id, event, genres, score, desired_status, now
                             )
+                            await self._resync_fingerprint(connection, event_id)
                     else:
                         event_id = str(uuid.uuid4())
                         await connection.execute(
@@ -189,7 +255,7 @@ class EventRepository:
                                 event.artist,
                                 json.dumps(list(event.artists)),
                                 event.venue,
-                                normalize_text(event.venue),
+                                self._venue_key(event.venue),
                                 event.location,
                                 _iso(event.starts_at),
                                 _iso(event.ends_at),
@@ -272,7 +338,7 @@ class EventRepository:
                 event.artist,
                 json.dumps(list(event.artists)),
                 event.venue,
-                normalize_text(event.venue),
+                self._venue_key(event.venue),
                 event.location,
                 _iso(event.starts_at),
                 _iso(event.ends_at),
@@ -328,7 +394,7 @@ class EventRepository:
                 event.artist,
                 json.dumps(list(event.artists)),
                 event.venue,
-                normalize_text(event.venue),
+                self._venue_key(event.venue),
                 event.location,
                 _iso(event.starts_at),
                 _iso(event.ends_at),
@@ -354,20 +420,65 @@ class EventRepository:
             row = await cursor.fetchone()
             return _event_from_row(row) if row else None
 
-    async def list_events(self, *statuses: EventStatus) -> list[EventRecord]:
+    async def list_events(
+        self,
+        *statuses: EventStatus,
+        venue: str | None = None,
+        on_date: date | None = None,
+    ) -> list[EventRecord]:
+        """Stored events, optionally narrowed to one venue and one local date.
+
+        The curator tasks that write onto the shared calendar use this to ask
+        "does the bot already carry this show?" before adding an entry. Asking
+        by venue and night rather than by title is the point: the titles are
+        exactly what the sources disagree about.
+        """
+        where = ""
+        parameters: tuple[str, ...] = ()
+        if statuses:
+            where = f"WHERE status IN ({','.join('?' for _ in statuses)}) "
+            parameters = tuple(status.value for status in statuses)
         async with self.database.connect() as connection:
-            if statuses:
-                placeholders = ",".join("?" for _ in statuses)
-                cursor = await connection.execute(
-                    f"SELECT * FROM events WHERE status IN ({placeholders}) "
-                    "ORDER BY starts_at IS NULL, starts_at",
-                    tuple(status.value for status in statuses),
-                )
-            else:
-                cursor = await connection.execute(
-                    "SELECT * FROM events ORDER BY starts_at IS NULL, starts_at"
-                )
-            return [_event_from_row(row) for row in await cursor.fetchall()]
+            cursor = await connection.execute(
+                f"SELECT * FROM events {where}ORDER BY starts_at IS NULL, starts_at",
+                parameters,
+            )
+            records = [_event_from_row(row) for row in await cursor.fetchall()]
+
+        # The venue match is computed here rather than pushed into SQL against
+        # venue_normalized. That column holds whatever the rules produced when
+        # the row was first written, so a row predating an alias still carries
+        # the old key -- and those are precisely the rows a caller asking "does
+        # the bot already have this show?" must not miss. Returning nothing is
+        # the dangerous answer here: it is the one that says "go ahead and add
+        # it" and creates the duplicate.
+        if venue is not None:
+            wanted = self._venue_key(venue)
+            records = [
+                record for record in records if self._venue_key(record.venue) == wanted
+            ]
+        if on_date is not None:
+            records = [
+                record for record in records if self._local_date(record) == on_date
+            ]
+        return records
+
+    @staticmethod
+    def _local_date(record: EventRecord) -> date | None:
+        """The calendar day a show falls on where it happens, not in UTC.
+
+        A 9pm Pittsburgh show is stored as 01:00 UTC the next day, so filtering
+        on the UTC date would file half the listings under the wrong night.
+        """
+        if record.starts_at is None:
+            return None
+        zone = record.timezone
+        if zone:
+            try:
+                return record.starts_at.astimezone(ZoneInfo(zone)).date()
+            except (ZoneInfoNotFoundError, ValueError):
+                pass
+        return record.starts_at.date()
 
     async def list_review_queue(self) -> list[EventRecord]:
         async with self.database.connect() as connection:
@@ -698,7 +809,7 @@ class EventRepository:
                 ORDER BY starts_at
                 """,
                 (
-                    normalize_text(event.venue),
+                    self._venue_key(event.venue),
                     event.id,
                     iso,
                     f"-{hours} hours",
@@ -882,7 +993,7 @@ class EventRepository:
         if "title" in values:
             values["title_normalized"] = normalize_text(values["title"])
         if "venue" in values:
-            values["venue_normalized"] = normalize_text(values["venue"])
+            values["venue_normalized"] = self._venue_key(values["venue"])
         values["updated_at"] = _now().isoformat()
 
         assignments = ", ".join(f"{key} = ?" for key in values)
@@ -906,6 +1017,8 @@ class EventRepository:
                     "UPDATE events SET status = ? WHERE id = ?",
                     (EventStatus.PENDING_REVIEW.value, event_id),
                 )
+            if values.keys() & {"title", "venue", "starts_at"}:
+                await self._resync_fingerprint(connection, event_id)
             await connection.commit()
         updated = await self.get_event(event_id)
         if updated is None:

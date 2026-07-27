@@ -12,6 +12,7 @@ from music_event_bot.discovery.squarespace import SquarespaceSource
 from music_event_bot.discovery.ticketmaster import TicketmasterSource
 from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.models import TasteProfile
+from music_event_bot.domain.venues import VenueAliases
 from music_event_bot.services.orchestration import DiscoveryOrchestrator
 from music_event_bot.storage.database import Database
 from music_event_bot.storage.repositories import EventRepository
@@ -36,7 +37,10 @@ class Application:
     async def create(cls, settings: Settings) -> Application:
         database = Database(settings.database_path)
         await database.initialize()
-        repository = EventRepository(database)
+        venue_aliases = VenueAliases.load(settings.venue_aliases_path)
+        if venue_aliases:
+            logger.info("Collapsing %d venue aliases", len(venue_aliases.entries))
+        repository = EventRepository(database, venue_aliases=venue_aliases)
         await repository.seed_genre_roles(settings.role_map)
 
         manual_profile = profile_from_settings(settings)

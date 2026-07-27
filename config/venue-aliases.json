@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Thunderbird Music Hall",
+    "aliases": ["Thunderbird", "Thunderbird Cafe", "Thunderbird Cafe & Music Hall"],
+    "note": "arcane.city lists it bare as 'Thunderbird'; the venue's own RSS uses the full name. Split Ensiferum into two review cards (2026-09-13)."
+  },
+  {
+    "name": "Roxian Theatre",
+    "aliases": ["Roxian Theatre Presented By Citizens"],
+    "note": "Ticketmaster carries the sponsor in the venue name; every other source does not."
+  },
+  {
+    "name": "Mr Smalls Theatre",
+    "aliases": ["Mr Smalls"],
+    "note": "Deliberately does NOT cover 'The Funhouse at Mr Smalls' -- that is a separate room in the same building and books its own bills."
+  },
+  {
+    "name": "Grog Shop",
+    "aliases": ["Grog Shop and B Side"],
+    "note": "B Side is the downstairs bar of the same room; Ticketmaster listed one Show Me The Body bill under each name (2026-09-18)."
+  }
+]

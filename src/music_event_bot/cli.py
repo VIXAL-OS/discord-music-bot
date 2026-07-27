@@ -6,12 +6,14 @@ import json
 import logging
 import os
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 
 from music_event_bot.app import Application
 from music_event_bot.config import Settings
 from music_event_bot.discovery.images import is_publishable_image
 from music_event_bot.domain.models import EventStatus
+from music_event_bot.services.dedupe import DEFAULT_WINDOW_MINUTES
 from music_event_bot.storage.database import Database
 from music_event_bot.taste.spotify import authorize_spotify
 
@@ -80,6 +82,17 @@ def _parser() -> argparse.ArgumentParser:
         choices=[status.value for status in EventStatus],
         help="Filter by lifecycle status; repeat to include multiple statuses",
     )
+    events_parser.add_argument(
+        "--venue",
+        help="Only events at this venue, matched through config/venue-aliases.json",
+    )
+    events_parser.add_argument(
+        "--on",
+        dest="on_date",
+        type=date.fromisoformat,
+        metavar="YYYY-MM-DD",
+        help="Only events on this local calendar night at the venue's own timezone",
+    )
     subparsers.add_parser("scrape-once", help="Run all enabled discovery sources once")
     backfill_parser = subparsers.add_parser(
         "backfill-artwork",
@@ -107,6 +120,29 @@ def _parser() -> argparse.ArgumentParser:
         "--skip-verify",
         action="store_true",
         help="Skip the content-type fetch; URL-level placeholder rules still apply",
+    )
+    dedupe_parser = subparsers.add_parser(
+        "dedupe",
+        help="Repair stale fingerprints and fold duplicate events together "
+        "(reports without --apply)",
+    )
+    dedupe_parser.add_argument(
+        "--window-minutes",
+        type=_positive_int,
+        default=DEFAULT_WINDOW_MINUTES,
+        help="How far two starts may differ and still be one show "
+        f"(default: {DEFAULT_WINDOW_MINUTES}; an early and a late set are ~150 apart)",
+    )
+    dedupe_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Repair fingerprints and merge duplicates; without it nothing is modified",
+    )
+    dedupe_parser.add_argument(
+        "--include-published",
+        action="store_true",
+        help="Also merge duplicates that already announced to Discord. The "
+        "announcement and scheduled event are NOT removed -- delete those by hand",
     )
     subparsers.add_parser("review-sync", help="Connect to Discord and reconcile review cards")
     subparsers.add_parser("bot", help="Run the Discord bot and scheduler")
@@ -194,7 +230,9 @@ async def _run(args: argparse.Namespace) -> None:
         return
     if args.command == "events":
         statuses = tuple(EventStatus(value) for value in (args.status or []))
-        events = await app.repository.list_events(*statuses)
+        events = await app.repository.list_events(
+            *statuses, venue=args.venue, on_date=args.on_date
+        )
         print(json.dumps([asdict(event) for event in events], indent=2, default=str))
         return
     if args.command == "scrape-once":
@@ -210,6 +248,75 @@ async def _run(args: argparse.Namespace) -> None:
             **({"statuses": statuses} if statuses else {}), apply=args.apply
         )
         print(json.dumps(asdict(summary), indent=2, default=str))
+        return
+
+    if args.command == "dedupe":
+        from music_event_bot.services.dedupe import DedupeService
+
+        service = DedupeService(app.repository)
+        report = await service.scan(window_minutes=args.window_minutes)
+        if args.apply:
+            await service.repair(report)
+            for group in report.groups:
+                report.merged += await service.merge(
+                    group, include_published=args.include_published
+                )
+            if report.merged:
+                # A repair skipped earlier because its recomputed key collided
+                # may be free now: merging deleted the row that owned that key.
+                settled = await service.scan(window_minutes=args.window_minutes)
+                report.repaired += await service.repair(settled)
+        report.skipped_published = sum(
+            len(group.blocked_by_publication) for group in report.groups
+        ) if not args.include_published else 0
+        print(
+            json.dumps(
+                {
+                    "applied": args.apply,
+                    "window_minutes": args.window_minutes,
+                    "stale_fingerprints": len(report.stale),
+                    "stale_colliding": sum(
+                        1 for stale in report.stale if stale.collides_with
+                    ),
+                    "fingerprints_repaired": report.repaired,
+                    "stale_venue_keys": len(report.stale_venue_keys),
+                    "venue_keys_refreshed": report.venue_keys_refreshed,
+                    "duplicate_groups": len(report.groups),
+                    "events_merged": report.merged,
+                    "skipped_because_published": report.skipped_published,
+                    "groups": [
+                        {
+                            "reason": group.reason,
+                            "keep": {
+                                "id": group.keeper.event_id,
+                                "title": group.keeper.title,
+                                "venue": group.keeper.venue,
+                                "starts_at": group.keeper.starts_at,
+                                "status": group.keeper.status,
+                                "sources": list(group.keeper.sources),
+                            },
+                            "merge": [
+                                {
+                                    "id": loser.event_id,
+                                    "title": loser.title,
+                                    "venue": loser.venue,
+                                    "starts_at": loser.starts_at,
+                                    "status": loser.status,
+                                    "sources": list(loser.sources),
+                                    "announcement_message_id": loser.announcement_message_id,
+                                    "scheduled_event_id": loser.scheduled_event_id,
+                                    "needs_manual_discord_cleanup": loser.is_public,
+                                }
+                                for loser in group.losers
+                            ],
+                        }
+                        for group in report.groups
+                    ],
+                },
+                indent=2,
+                default=str,
+            )
+        )
         return
 
     if args.command == "set-image":

@@ -156,6 +156,8 @@ MUSICBOT_RSS_URLS=https://venue.example/events.xml
 
 ICS is the preferred feed format because it carries structured dates, locations, timezones, and stable UIDs.
 
+One of the configured feeds is the bot's **own** output calendar ("Pittsburgh Heavy Events"), which is deliberate — it is how out-of-band curator jobs hand events to the bot — but it means a show can reach the bot twice: once from a scraper, once as a calendar entry written under a different title. Those tasks share one title convention and check `events --venue ... --on ...` before writing for exactly this reason. See **Duplicate events** under Commands for the clean-up path.
+
 `MUSICBOT_ICS_URLS` entries may also be **local file paths** (e.g. `data/email-events.ics`). A configured file that does not exist yet is skipped with a warning, so an out-of-band curator — a person, or a scheduled job that parses venue emails — can hand events to the bot by maintaining a calendar file. Feed fetchers send a browser-style User-Agent because some venue calendars (e.g. warhol.org) sit behind Cloudflare and reject non-browser clients.
 
 RSS/Atom is accepted only when entries expose structured event fields such as `event_start`, `dtstart`, `venue`, and `location`. The feed publication date is **not** treated as the show date. Missing fields produce an `incomplete` review card.
@@ -228,13 +230,26 @@ Each tag is mapped to (a) the Discord genre buckets from `MUSICBOT_GENRE_ROLE_MA
 music-event-bot migrate
 music-event-bot health
 music-event-bot events --status pending_review
+music-event-bot events --venue "Thunderbird Music Hall" --on 2026-09-13
 music-event-bot scrape-once
+music-event-bot dedupe
 music-event-bot review-sync
 music-event-bot bot
 music-event-bot spotify-auth
 ```
 
 `health` and `migrate` do not require Discord credentials. `scrape-once` works with whichever discovery sources are configured.
+
+`events --venue ... --on ...` answers "does the bot already carry this show?" without going through titles — which is what the sources disagree about. The venue is resolved through `config/venue-aliases.json`, and `--on` is the local calendar night at the venue's own timezone, not the UTC date. The scheduled tasks that write onto the shared Google Calendar call this before adding an entry.
+
+### Duplicate events
+
+`music-event-bot dedupe` reports; `--apply` writes. It does two things:
+
+1. **Repairs derived keys.** The fingerprint is `title | venue | start-minute`, and all three of those get corrected after first sight — most often when a location arrives late and a row ingested with no venue finally gets one. The fingerprint used to be left frozen at first-sight values, which removed that row from dedupe permanently, so the next source describing the same show created a second event and a second review card. Ingest now re-syncs the key automatically; `dedupe` fixes rows written before that and after any change to the venue rules.
+2. **Groups events that are one show stored twice** — same venue, starts within `--window-minutes` (default 90), related titles — and folds each group into a single keeper. Published rows win; otherwise the earliest.
+
+Merging is narrow on purpose. A multi-room venue runs different bills at the same hour (Spirit Hall vs Spirit Lodge; Southgate House Revival's three rooms), and a jazz club sells an early and a late set of the same billing about 150 minutes apart — hence the 90-minute default. A duplicate that already announced to Discord is reported but **not** merged unless you pass `--include-published`, because deleting the row does not delete the announcement or the scheduled event; those have to come down by hand.
 
 ### Discord slash commands
 
