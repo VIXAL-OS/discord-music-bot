@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
@@ -10,7 +11,7 @@ from music_event_bot.discovery.base import DiscoveryWindow, EventSource
 from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.models import DiscoveredEvent, EventRecord, TasteProfile
-from music_event_bot.domain.normalization import normalize_text
+from music_event_bot.domain.normalization import normalize_text, normalize_venue
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.storage.repositories import EventRepository
 from music_event_bot.taste.event_genres import EventGenreClassifier
@@ -45,29 +46,82 @@ def _within_travel_radius(
     return haversine_miles(home, venue_point) <= max_radius_miles
 
 
-def _apply_address_book(event: DiscoveredEvent, book: dict[str, str]) -> DiscoveredEvent:
-    """Fill venue/location from the address book when the title names them.
+_ZIP_CODE = re.compile(r"\b\d{5}\b")
 
-    Secret-location parties (Hot Mass) and recurring series never carry an
-    address in their listings; without one their events sit unapprovable.
+
+def _echoes_venue(event: DiscoveredEvent) -> bool:
+    """True when the location field merely repeats the venue name.
+
+    Several sources fill location with the venue name rather than leave it
+    empty, which looks populated but carries no address. Treating that as a
+    real location let the address book skip the row entirely.
     """
-    if not book or (event.venue and event.location):
+    if not event.location or not event.venue:
+        return False
+    return normalize_text(event.location) == normalize_text(event.venue)
+
+
+def _zip_code(value: str | None) -> str | None:
+    match = _ZIP_CODE.search(value or "")
+    return match.group(0) if match else None
+
+
+def _contradicts(location: str, curated: str) -> bool:
+    """True when the two addresses disagree on the zip they name.
+
+    The narrowest evidence that a listing is actually wrong rather than merely
+    spelled differently. It keeps the book from trampling addresses that are
+    fine: "Ave" vs "Avenue" agrees on 15224, and a book entry that names no zip
+    at all (Hot Mass) never contradicts anything.
+    """
+    listed, book = _zip_code(location), _zip_code(curated)
+    return bool(listed and book and listed != book)
+
+
+def _fill(event: DiscoveredEvent, venue: str, location: str) -> DiscoveredEvent:
+    incomplete = tuple(
+        reason
+        for reason in event.incomplete_reasons
+        if not (reason == "missing venue" and venue)
+        and not (reason == "missing location" and location)
+    )
+    return replace(event, venue=venue, location=location, incomplete_reasons=incomplete)
+
+
+def _apply_address_book(event: DiscoveredEvent, book: dict[str, str]) -> DiscoveredEvent:
+    """Fill or correct venue/location from the address book.
+
+    Two ways in, with deliberately different authority:
+
+    * Keyed by **venue** -- a hand-checked entry for a room we know. It may
+      correct what the source supplied, but only on the two signals that mean
+      the listing is genuinely unusable: a location that just repeats the venue
+      name, or one whose zip contradicts the curated one (arcane.city puts The
+      Eagle in 15202; it is 15212). Anything else is left alone, so a source
+      that supplies a *better* address than the book -- Hot Mass listings that
+      name the street the book deliberately withholds -- keeps it.
+    * Keyed by **title** -- secret-location parties and recurring series that
+      never carry an address at all. A title fragment is a far looser signal
+      than a venue name, so it only ever fills a gap.
+    """
+    if not book:
         return event
+    echo = _echoes_venue(event)
+    venue_padded = f" {normalize_venue(event.venue)} " if event.venue else ""
     title_padded = f" {normalize_text(event.title)} "
-    for fragment, full in book.items():
-        if f" {normalize_text(fragment)} " not in title_padded:
-            continue
-        venue = event.venue or full.split(",", 1)[0].strip()
-        location = event.location or full
-        incomplete = tuple(
-            reason
-            for reason in event.incomplete_reasons
-            if not (reason == "missing venue" and venue)
-            and not (reason == "missing location" and location)
-        )
-        return replace(
-            event, venue=venue, location=location, incomplete_reasons=incomplete
-        )
+
+    for fragment, curated in book.items():
+        normalized = f" {normalize_text(fragment)} "
+        if venue_padded and normalized in venue_padded:
+            if not (echo or not event.location or _contradicts(event.location, curated)):
+                return event
+            return _fill(event, event.venue or curated.split(",", 1)[0].strip(), curated)
+        if normalized in title_padded and not (event.venue and event.location and not echo):
+            return _fill(
+                event,
+                event.venue or curated.split(",", 1)[0].strip(),
+                curated if (echo or not event.location) else event.location,
+            )
     return event
 
 logger = logging.getLogger(__name__)

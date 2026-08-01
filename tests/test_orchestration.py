@@ -253,6 +253,89 @@ def test_address_book_fills_secret_location_series() -> None:
     assert _apply_address_book(unrelated, book).venue is None
 
 
+def test_address_book_corrects_a_wrong_address_when_keyed_by_venue() -> None:
+    """A curated entry outranks the source for the room it names.
+
+    arcane.city lists The Eagle in 15202; it is in 15212. A fallback-only book
+    could never fix that, because a wrong address still counts as present.
+    """
+    from music_event_bot.services.orchestration import _apply_address_book
+
+    book = {"eagle": "The Eagle, 1740 Eckert St, Pittsburgh, PA 15212"}
+    spin = DiscoveredEvent(
+        source_name="arcane-city",
+        source_event_id="spin-september-2026",
+        title="SPIN - September 2026",
+        venue="The Eagle",
+        location="1740 Eckert, Pittsburgh, PA, 15202",
+    )
+    corrected = _apply_address_book(spin, book)
+    assert corrected.location == "The Eagle, 1740 Eckert St, Pittsburgh, PA 15212"
+    # The source's own venue spelling is kept -- only the address was wrong.
+    assert corrected.venue == "The Eagle"
+
+    # Word-bounded, so a different room that merely contains the fragment is safe.
+    other = DiscoveredEvent(
+        source_name="arcane-city",
+        source_event_id="en-1",
+        title="Some Show",
+        venue="Eagles Nest",
+        location="Eagles Nest, Somewhere, PA 15001",
+    )
+    assert _apply_address_book(other, book) is other
+
+
+def test_address_book_leaves_addresses_it_does_not_contradict() -> None:
+    """The book corrects wrong listings, it does not overwrite good ones.
+
+    A curated entry is often vaguer than what a source eventually supplies
+    (Hot Mass withholds the street on purpose), and differing spellings of the
+    same address are not errors worth an announcement edit.
+    """
+    from music_event_bot.services.orchestration import _apply_address_book
+
+    book = {
+        "hot mass": "Hot Mass, Pittsburgh, PA (address emailed to ticketholders)",
+        "roboto": "The Mr. Roboto Project, 5106 Penn Avenue, Pittsburgh, PA 15224",
+    }
+    # The source knows the street; the book deliberately does not.
+    precise = DiscoveredEvent(
+        source_name="arcane-city",
+        source_event_id="hm-3",
+        title="Hoagie Dreams",
+        venue="Hot Mass",
+        location="1139 Penn Ave, Pittsburgh, PA",
+    )
+    assert _apply_address_book(precise, book) is precise
+
+    # Same address, different spelling -- agrees on the zip, so no churn.
+    spelling = DiscoveredEvent(
+        source_name="ics",
+        source_event_id="rb-9",
+        title="Truck Violence",
+        venue="The Mr. Roboto Project",
+        location="The Mr. Roboto Project, 5106 Penn Ave, Pittsburgh, PA 15224",
+    )
+    assert _apply_address_book(spelling, book) is spelling
+
+
+def test_address_book_fills_a_location_that_only_echoes_the_venue() -> None:
+    """A location repeating the venue name is not an address."""
+    from music_event_bot.services.orchestration import _apply_address_book
+
+    book = {"roboto": "The Mr. Roboto Project, 5106 Penn Avenue, Pittsburgh, PA 15224"}
+    flea = DiscoveredEvent(
+        source_name="ics",
+        source_event_id="roboto-flea-1",
+        title="Roboto Punk Rock Flea Market",
+        venue="Roboto Project",
+        location="Roboto Project",
+    )
+    filled = _apply_address_book(flea, book)
+    assert filled.location == "The Mr. Roboto Project, 5106 Penn Avenue, Pittsburgh, PA 15224"
+    assert filled.venue == "Roboto Project"
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_uses_one_to_180_day_window() -> None:
     settings = Settings(_env_file=None)
