@@ -8,6 +8,13 @@ version = "0.1.0"
 description = "Discover, review, and publish music events to Discord"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Communications :: Chat",
+  "Topic :: Database",
+]
 dependencies = [
   "APScheduler>=3.10,<4",
   "aiosqlite>=0.20,<1",

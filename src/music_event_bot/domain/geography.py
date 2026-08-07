@@ -72,7 +72,7 @@ def generate_coverage_cells(
     if max_radius_miles <= 0 or cell_radius_miles <= 0:
         raise ValueError("travel and cell radii must be positive")
     if cell_radius_miles >= max_radius_miles:
-        return (CoverageCell("home-15222", home, cell_radius_miles),)
+        return (CoverageCell("home", home, cell_radius_miles),)
 
     horizontal_spacing = (
         math.sqrt(3) * cell_radius_miles * _COVERAGE_SPACING_FACTOR
@@ -100,7 +100,7 @@ def generate_coverage_cells(
     cells: list[CoverageCell] = []
     for row, column, east_offset, north_offset in candidates:
         if row == 0 and column == 0:
-            name = "home-15222"
+            name = "home"
             center = home
         else:
             name = f"regional-r{row:+03d}-c{column:+03d}"
@@ -110,7 +110,7 @@ def generate_coverage_cells(
         cells.append(CoverageCell(name, center, cell_radius_miles))
 
     return tuple(
-        sorted(cells, key=lambda cell: (cell.name != "home-15222", cell.name))
+        sorted(cells, key=lambda cell: (cell.name != "home", cell.name))
     )
 
 

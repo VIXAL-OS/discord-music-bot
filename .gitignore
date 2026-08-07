@@ -1,6 +1,9 @@
 .env
 .env.*
 !.env.example
+# Deployment-specific overrides of the tracked example configs in config/.
+# Point MUSICBOT_*_PATH at one of these to keep local data out of the repo.
+config/*.local.json
 .venv/
 __pycache__/
 *.py[cod]

@@ -7,6 +7,76 @@ A functional Python/Discord MVP that discovers upcoming music events, scores the
 
 The original generated prototype is preserved unchanged at `legacy/music_event_scraper_prototype.py`. The root `music-event-scraper.py` is now a compatibility launcher for the new package.
 
+## Architecture
+
+```text
+discovery sources ─┐
+  Ticketmaster     │
+  ICS / webcal     ├─> normalize ─> score ─> SQLite ─> review queue ─> Discord
+  RSS / Atom       │                          (events, provenance,     (human
+  Squarespace      │                           reviews, publications)   approval)
+  arcane.city      │                                                       │
+  manual submit  ──┘                                              scheduled event
+                                                                + announcement embed
+```
+
+Each layer is a separate package under `src/music_event_bot/`: `discovery/` (one
+adapter per source, all returning the same `DiscoveredEvent`), `domain/` (pure
+scoring, normalization, geography, blocklist — no I/O), `storage/` (schema,
+migrations, repositories), `services/` (orchestration, dedupe, publishing),
+and `discord/` (bot, review UI, publication gateway). The domain layer has no
+database or network imports, which is what makes the scoring rules directly
+testable.
+
+## Data layer
+
+Storage is SQLite through [`aiosqlite`](https://github.com/omnilib/aiosqlite),
+with the schema in [`storage/migrations.py`](src/music_event_bot/storage/migrations.py),
+connection handling in [`storage/database.py`](src/music_event_bot/storage/database.py),
+and queries in [`storage/repositories.py`](src/music_event_bot/storage/repositories.py).
+
+**Schema.** Eleven application tables plus `schema_migrations`. Foreign keys are
+enforced (`PRAGMA foreign_keys = ON`) and every child table — `event_sources`,
+`reviews`, `publications`, `rsvps` — cascades from `events` on delete. Integrity
+is pushed into the schema rather than the application: a `UNIQUE` fingerprint on
+`events`, `UNIQUE(source_name, source_event_id)` on `event_sources` so one source
+cannot file the same listing twice, composite primary keys on the tag and
+preference tables, and a `CHECK` constraint restricting `rsvps.state` to
+`going` / `interested` / `declined`.
+
+**Migrations.** Seven forward-only migrations, applied in order and recorded in
+`schema_migrations`. Each runs inside `BEGIN IMMEDIATE` and rolls back as a unit
+on failure, so a partial upgrade cannot leave a half-built schema behind.
+Startup is idempotent — already-applied versions are skipped — and a database
+whose version is *newer* than the running code is refused outright rather than
+silently downgraded. `WAL` journalling and a five-second `busy_timeout` let the
+scheduler's discovery job write while the Discord bot reads.
+
+**Idempotent ingestion.** The same show routinely arrives from several sources
+under different titles. Events are keyed by a derived fingerprint
+(`title | venue | start-minute`); ingest upserts on that key with
+`INSERT ... ON CONFLICT ... DO UPDATE`, attaching each contributing source as a
+row in `event_sources` rather than creating a second event. Because all three
+fingerprint inputs can be corrected after first sight — a venue often arrives
+late — the key is re-synced on write, and `music-event-bot dedupe` repairs rows
+written before that behaviour existed. There are eleven upserts across the
+repository layer, split between `DO UPDATE` and `DO NOTHING` depending on
+whether later sources should overwrite earlier ones.
+
+**Query patterns.** Reads join `events` against `reviews`, `publications`, and
+`event_sources` (both inner and `LEFT JOIN`, the latter to find events that have
+*no* review row yet). Indexes are built for the queries that actually run: the
+review queue is served by a covering composite index on
+`(status, score DESC, starts_at, id)` that matches its exact sort order, with
+five more supporting status/date lookups, fingerprint matching, provenance
+lookups, and the most-recent-run-per-job query.
+
+**Tests.** 221 tests run against real SQLite databases in `tmp_path` — no mocks
+at the storage boundary. Beyond round-tripping, they cover the cases that
+actually break databases: migrations applied twice, a *populated* v1 database
+migrated forward to v2 with its rows intact, an upsert merging a second source
+into an existing event, and review-queue ordering under ties.
+
 ## What works in the MVP
 
 - Manual artist, genre, and venue preferences.
@@ -116,7 +186,7 @@ MUSICBOT_DISCOVERY_START_OFFSET_DAYS=1
 MUSICBOT_DISCOVERY_HORIZON_DAYS=180
 ```
 
-The home coordinates are the approximate centroid of ZIP 15222. The bot generates 31 overlapping Ticketmaster coverage cells across the complete 350-mile travel region. This includes Pittsburgh, intermediate cities such as Youngstown, Morgantown, Harrisburg, Erie, and Buffalo, and outer destinations such as Cleveland, Columbus, Philadelphia, and Toronto. Generated cells do not apply a US-only country filter, allowing Canadian events to appear. Coverage settings that would exceed the 64-cell safety bound are rejected with an instruction to increase the cell radius.
+Set the home coordinates to the centre of your own region; the example above is downtown Pittsburgh. At these defaults the bot generates 31 overlapping Ticketmaster coverage cells across the complete 350-mile travel region. This includes Pittsburgh, intermediate cities such as Youngstown, Morgantown, Harrisburg, Erie, and Buffalo, and outer destinations such as Cleveland, Columbus, Philadelphia, and Toronto. Generated cells do not apply a US-only country filter, allowing Canadian events to appear. Coverage settings that would exceed the 64-cell safety bound are rejected with an instruction to increase the cell radius.
 
 Each cell has its own small pagination budget so dense Pittsburgh inventory cannot crowd distant markets out of one giant date-sorted result set. At the defaults, a run makes at most 62 Ticketmaster page requests and normally fewer. Overlapping results are deduplicated by Ticketmaster event ID.
 
@@ -140,7 +210,7 @@ Scoring is deterministic:
 - Genre matches: up to 30 affinity points
 - Related (weak) genre matches: up to 10 affinity points
 - Venue match: 10 affinity points (corroboration only — a pinned venue cannot pass the review gate without a matching artist or genre)
-- Distance preference: up to 20 additional points, decaying nonlinearly from ZIP 15222 to zero at 350 miles
+- Distance preference: up to 20 additional points, decaying nonlinearly from the configured home coordinates to zero at the travel radius
 - Total is capped at 100
 
 Genres carry two evidence tiers. Niche tags and manually configured genres are **strong** evidence (15 points per match): a single match can put an event into review. Umbrella genres (`MUSICBOT_UMBRELLA_GENRES` — "rock", "pop", "country", …) and all genres produced by upward mapping are **weak** evidence (5 points per match, capped at 10): they corroborate events that already have real evidence but can never pass the 15-point review gate alone. Without this split, a taste profile enriched with hundreds of tags would match essentially every event Ticketmaster returns.
@@ -351,3 +421,26 @@ pytest
 ```
 
 Tests use temporary SQLite databases, mocked Ticketmaster responses, feed fixtures, and fake Discord publication gateways. A final real-service smoke test requires the credentials and IDs listed above and should be performed in a staging Discord server before using a production community.
+
+## Local configuration
+
+`config/blocked-artists.json` and `config/venue-aliases.json` are tracked as
+**examples**. A running deployment usually wants its own, and a blocklist in
+particular records one community's moderation decisions, which do not belong in
+a public repository. Keep those local: `config/*.local.json` is gitignored, so
+copy the example, edit it, and point the setting at the copy.
+
+```dotenv
+MUSICBOT_BLOCKED_ARTISTS_PATH=config/blocked-artists.local.json
+```
+
+## License
+
+[MIT](LICENSE).
+
+This project talks to third-party services under their own terms. It uses the
+official Ticketmaster Discovery, Spotify, Last.fm, and MusicBrainz APIs, honours
+MusicBrainz's one-request-per-second etiquette, and deliberately does **not**
+scrape sources whose terms prohibit it — see *What was not implemented from the
+original requests* above for the reasoning in each case. Event artwork is
+referenced by the source's own URL and is never rehosted.

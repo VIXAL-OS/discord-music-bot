@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     venue_aliases_path: Path = Path("config/venue-aliases.json")
 
     ticketmaster_api_key: SecretStr | None = None
+    # Centre of the coverage region. Defaults to downtown Pittsburgh; set
+    # MUSICBOT_HOME_LATITUDE/LONGITUDE in .env for your own deployment.
     home_latitude: float = 40.4406
     home_longitude: float = -79.9959
     max_travel_radius_miles: int = 350
