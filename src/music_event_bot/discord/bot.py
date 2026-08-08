@@ -121,6 +121,10 @@ class MusicEventDiscordBot(commands.Bot):
             fallback_role_ids=fallback_roles,
             catchall_role_ids=catchall_roles,
         )
+        # Discovery writes late-arriving artwork straight to SQLite. Hand it the
+        # publication service so an event that was announced before its flyer
+        # existed gets that embed refreshed instead of staying imageless.
+        self.music_app.discovery.published_sync = self.publication_service
         self.scheduler = BotScheduler(self.settings)
         self.request_parser = RequestEventParser(self.settings)
         self._ready_once = False

@@ -4,13 +4,19 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 from music_event_bot.config import Settings
 from music_event_bot.discovery.artwork import ArtworkResolver
 from music_event_bot.discovery.base import DiscoveryWindow, EventSource
 from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.geography import GeoPoint, haversine_miles
-from music_event_bot.domain.models import DiscoveredEvent, EventRecord, TasteProfile
+from music_event_bot.domain.models import (
+    DiscoveredEvent,
+    EventRecord,
+    EventStatus,
+    TasteProfile,
+)
 from music_event_bot.domain.normalization import normalize_text, normalize_venue
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.storage.repositories import EventRepository
@@ -140,6 +146,12 @@ class DiscoverySummary:
     blocked_artists: int = 0
 
 
+class PublishedEventSync(Protocol):
+    """Refreshes an announcement Discord has already posted."""
+
+    async def update_existing(self, event_id: str) -> None: ...
+
+
 class DiscoveryOrchestrator:
     def __init__(
         self,
@@ -150,6 +162,7 @@ class DiscoveryOrchestrator:
         artwork: ArtworkResolver | None = None,
         genres: EventGenreClassifier | None = None,
         blocklist: Blocklist | None = None,
+        published_sync: PublishedEventSync | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -158,6 +171,10 @@ class DiscoveryOrchestrator:
         self.artwork = artwork
         self.genres = genres
         self.blocklist = blocklist or Blocklist()
+        # Set by the Discord bot, which owns the publication service. Left None
+        # for CLI runs (scrape-once) and tests, where there is no live guild to
+        # push to and discovery must still complete.
+        self.published_sync = published_sync
 
     async def _classify_genres(self, events: list[EventRecord]) -> int:
         """Ask Claude about events whose own text named no genre."""
@@ -177,6 +194,29 @@ class DiscoveryOrchestrator:
             await self.repository.update_event(event_id, genres=list(genres))
             logger.info("Classified %s as %s", event_id, ", ".join(genres))
         return len(assigned)
+
+    async def _refresh_live_announcement(self, event: EventRecord) -> None:
+        """Push late-arriving artwork onto an announcement that is already live.
+
+        Sources routinely publish a flyer days after they first list a show, so
+        discovery finds art for events that have already been announced. That
+        write only ever reached SQLite: nothing in the orchestrator could edit a
+        posted embed, so the announcement kept its empty image until somebody
+        noticed and ran `set-image` by hand. Only published events have an embed
+        to refresh, and a Discord failure here must not abort the rest of the run.
+
+        A failure is not retried automatically: image_url is set by now, so the
+        resolver skips this event on the next cycle and never asks again. The
+        log line is the only signal, and the repair is
+        `music-event-bot set-image <id> <same url>`, which re-pushes the embed.
+        """
+        if self.published_sync is None or event.status != EventStatus.PUBLISHED:
+            return
+        try:
+            await self.published_sync.update_existing(event.id)
+            logger.info("Refreshed the live announcement for %s with new artwork", event.id)
+        except Exception:
+            logger.exception("Could not refresh the announcement for %s", event.id)
 
     async def run(self) -> DiscoverySummary:
         started_at = datetime.now(UTC)
@@ -290,8 +330,9 @@ class DiscoveryOrchestrator:
                         event_id,
                     )
                     continue
-                await self.repository.update_event(event_id, image_url=image)
+                updated = await self.repository.update_event(event_id, image_url=image)
                 artwork_found += 1
+                await self._refresh_live_announcement(updated)
 
         deduped = await self.repository.dedupe_tour_events(
             self.settings.home_point, self.settings.max_travel_radius_miles

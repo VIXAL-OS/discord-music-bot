@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -8,7 +8,13 @@ import pytest
 
 from music_event_bot.config import Settings
 from music_event_bot.discovery.base import DiscoveryWindow
-from music_event_bot.domain.models import DiscoveredEvent, ScoreResult, TasteProfile
+from music_event_bot.domain.models import (
+    DiscoveredEvent,
+    EventRecord,
+    EventStatus,
+    ScoreResult,
+    TasteProfile,
+)
 from music_event_bot.services.orchestration import DiscoveryOrchestrator
 from music_event_bot.storage.repositories import EventRepository
 
@@ -389,3 +395,155 @@ async def test_affinity_gate_applies_to_every_source() -> None:
         assert stored_event.title == "Grindcore Night"
         curated_reasons = [r for r in stored_score.reasons if r.startswith("curated source")]
         assert bool(curated_reasons) is not requires_affinity
+
+
+def _record(**overrides: Any) -> EventRecord:
+    values: dict[str, Any] = {
+        "id": "ev-1",
+        "title": "The Example Ensemble",
+        "artist": "The Example Ensemble",
+        "artists": ("The Example Ensemble",),
+        "venue": "Example Hall",
+        "location": "Example Hall, Pittsburgh, PA",
+        "starts_at": datetime(2026, 9, 1, 23, 0, tzinfo=UTC),
+        "ends_at": None,
+        "timezone": "America/New_York",
+        "url": "https://events.example.test/show",
+        "image_url": None,
+        "description": None,
+        "genres": ("indie",),
+        "status": EventStatus.PENDING_REVIEW,
+        "score": 60,
+        "match_reasons": ("genre match: indie",),
+        "created_at": datetime(2026, 8, 1, tzinfo=UTC),
+        "updated_at": datetime(2026, 8, 1, tzinfo=UTC),
+    }
+    values.update(overrides)
+    return EventRecord(**values)
+
+
+class _FoundArtwork:
+    """Stands in for ArtworkResolver: always turns up one image."""
+
+    shared_images: frozenset[str] = frozenset()
+
+    def __init__(self, image: str = "https://cdn.example.test/flyer.webp") -> None:
+        self.image = image
+
+    async def resolve(self, event: DiscoveredEvent) -> str | None:
+        return self.image
+
+
+class _ArtworkRepository:
+    """Repository stub for the artwork path; upsert hands back a real record."""
+
+    def __init__(self, status: EventStatus) -> None:
+        self.status = status
+        self.updates: list[tuple[str, dict[str, Any]]] = []
+
+    async def upsert_discovered(
+        self, event: DiscoveredEvent, score: ScoreResult
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            created=True,
+            source_created=True,
+            event=_record(status=self.status),
+        )
+
+    async def update_event(self, event_id: str, **fields: Any) -> EventRecord:
+        self.updates.append((event_id, fields))
+        return _record(id=event_id, status=self.status, **fields)
+
+    async def record_job_run(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def dedupe_tour_events(self, *args: Any) -> int:
+        return 0
+
+    async def published_with_closer_pending(self, *args: Any) -> list[tuple[str, str]]:
+        return []
+
+
+class _SyncSpy:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls: list[str] = []
+        self.error = error
+
+    async def update_existing(self, event_id: str) -> None:
+        self.calls.append(event_id)
+        if self.error is not None:
+            raise self.error
+
+
+def _artwork_orchestrator(
+    repository: _ArtworkRepository, sync: _SyncSpy | None, complete_event: DiscoveredEvent
+) -> DiscoveryOrchestrator:
+    settings = Settings(_env_file=None, preferred_genres="indie")
+    source = StaticSource("calendar", [complete_event], requires_affinity=True)
+    return DiscoveryOrchestrator(
+        settings,
+        cast(EventRepository, repository),
+        [source],
+        TasteProfile(genres=("indie",)),
+        artwork=cast(Any, _FoundArtwork()),
+        published_sync=sync,
+    )
+
+
+@pytest.mark.asyncio
+async def test_late_artwork_refreshes_an_already_published_announcement(
+    complete_event,
+) -> None:
+    """Art that arrives after the announcement must reach Discord, not just SQLite.
+
+    Sources routinely post a flyer days after first listing a show. Discovery
+    wrote the new image_url straight to the database and stopped there, so the
+    embed Discord had already posted kept its empty image until somebody ran
+    set-image by hand -- 57 future shows were sitting in that state.
+    """
+    repository = _ArtworkRepository(EventStatus.PUBLISHED)
+    sync = _SyncSpy()
+    orchestrator = _artwork_orchestrator(repository, sync, complete_event)
+
+    summary = await orchestrator.run()
+
+    assert summary.artwork_found == 1
+    assert repository.updates == [("ev-1", {"image_url": "https://cdn.example.test/flyer.webp"})]
+    assert sync.calls == ["ev-1"]
+
+
+@pytest.mark.asyncio
+async def test_late_artwork_leaves_unpublished_events_alone(complete_event) -> None:
+    """Nothing has been posted yet, so there is no embed to refresh."""
+    repository = _ArtworkRepository(EventStatus.PENDING_REVIEW)
+    sync = _SyncSpy()
+    orchestrator = _artwork_orchestrator(repository, sync, complete_event)
+
+    summary = await orchestrator.run()
+
+    assert summary.artwork_found == 1
+    assert sync.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_announcement_refresh_does_not_abort_discovery(complete_event) -> None:
+    """The artwork is already saved; a Discord hiccup must not lose the run."""
+    repository = _ArtworkRepository(EventStatus.PUBLISHED)
+    sync = _SyncSpy(error=RuntimeError("Discord 503"))
+    orchestrator = _artwork_orchestrator(repository, sync, complete_event)
+
+    summary = await orchestrator.run()
+
+    assert sync.calls == ["ev-1"]
+    assert summary.artwork_found == 1
+
+
+@pytest.mark.asyncio
+async def test_discovery_runs_without_a_publisher(complete_event) -> None:
+    """CLI scrape-once and tests have no live guild; discovery must still finish."""
+    repository = _ArtworkRepository(EventStatus.PUBLISHED)
+    orchestrator = _artwork_orchestrator(repository, None, complete_event)
+
+    summary = await orchestrator.run()
+
+    assert summary.artwork_found == 1
