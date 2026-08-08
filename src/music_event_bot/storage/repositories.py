@@ -1089,6 +1089,51 @@ class EventRepository:
             )
             await connection.commit()
 
+    async def retract(self, event_id: str, reviewer_id: int, reason: str | None = None) -> None:
+        """Reject an event that already reached approved or published.
+
+        reject() deliberately refuses these states, because a published event
+        has a live announcement and a scheduled event that a status flip does
+        not touch. But the decision to stop featuring a show can arrive after
+        it went out -- most obviously when an act is added to the blocklist
+        later -- and until now there was no way to record that at all.
+
+        This only moves the row and the review decision. It does NOT delete the
+        Discord announcement, the scheduled event, or any calendar entry written
+        from it; those are external and have to come down separately. The
+        publication row is left intact so the announcement it points at stays
+        traceable.
+        """
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                """
+                UPDATE events SET status = ?, updated_at = ?
+                WHERE id = ? AND status IN ('approved', 'published')
+                """,
+                (EventStatus.REJECTED.value, now, event_id),
+            )
+            if cursor.rowcount != 1:
+                await connection.rollback()
+                raise ValueError(
+                    "Event does not exist or is not approved/published; "
+                    "use reject() for events still in review"
+                )
+            await connection.execute(
+                """
+                INSERT INTO reviews(event_id, decision, reviewer_id, reason,
+                                    decided_at, updated_at)
+                VALUES(?, 'rejected', ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    decision = 'rejected', reviewer_id = excluded.reviewer_id,
+                    reason = excluded.reason, decided_at = excluded.decided_at,
+                    updated_at = excluded.updated_at
+                """,
+                (event_id, str(reviewer_id), reason, now, now),
+            )
+            await connection.commit()
+
     async def begin_publication(self, event_id: str) -> dict[str, Any]:
         now = _now().isoformat()
         async with self.database.connect() as connection:

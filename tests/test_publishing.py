@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.models import EventRecord, EventStatus, ScoreResult
 from music_event_bot.services.publishing import PublicationService
 
@@ -394,3 +395,72 @@ async def test_publish_marks_failure_and_retry_preserves_created_scheduled_event
     assert completed_publication is not None
     assert completed_publication["state"] == "published"
     assert completed_publication["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_publish_refuses_an_act_blocklisted_after_approval(
+    repository, complete_event
+) -> None:
+    """The blocklist filtered only at ingest, so approval could predate the entry.
+
+    An act added to the roster after its show was already approved sailed
+    straight through the publish queue to the community.
+    """
+    approved = await _approved_event(repository, complete_event)
+    gateway = FakePublicationGateway()
+    service = PublicationService(
+        repository,
+        gateway,
+        blocklist=Blocklist(
+            entries={"the example ensemble": ("The Example Ensemble", "community decision")}
+        ),
+    )
+
+    with pytest.raises(ValueError, match="blocklist"):
+        await service.publish(approved.id)
+
+    # Nothing reached Discord at all -- not even the scheduled event, which is
+    # created before the announcement.
+    assert gateway.scheduled_calls == []
+    assert gateway.announcement_calls == []
+    stored = await repository.get_event(approved.id)
+    assert stored is not None
+    assert stored.status is EventStatus.PUBLISH_FAILED
+    publication = await repository.get_publication(approved.id)
+    assert publication is not None
+    assert "blocklist" in publication["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_retract_pulls_a_published_event_back_out(repository, complete_event) -> None:
+    """A roster decision can arrive after the show was already announced."""
+    approved = await _approved_event(repository, complete_event)
+    service = PublicationService(repository, FakePublicationGateway())
+    published = await service.publish(approved.id)
+    assert published.status is EventStatus.PUBLISHED
+
+    # reject() refuses this state by design, which left no way to record the
+    # decision at all.
+    with pytest.raises(ValueError):
+        await repository.reject(approved.id, reviewer_id=42, reason="too late")
+
+    await repository.retract(approved.id, reviewer_id=42, reason="blocked act on the bill")
+
+    stored = await repository.get_event(approved.id)
+    assert stored is not None
+    assert stored.status is EventStatus.REJECTED
+    # The publication row survives, so the announcement it points at stays
+    # traceable -- taking that down is a separate, external step.
+    publication = await repository.get_publication(approved.id)
+    assert publication is not None
+    assert publication["announcement_message_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_retract_refuses_an_event_still_in_review(repository, complete_event) -> None:
+    """retract() is for what already went out; reject() covers the review queue."""
+    stored = await repository.upsert_discovered(
+        complete_event, ScoreResult(score=10, reasons=())
+    )
+    with pytest.raises(ValueError, match="not approved/published"):
+        await repository.retract(stored.event.id, reviewer_id=42, reason="wrong tool")

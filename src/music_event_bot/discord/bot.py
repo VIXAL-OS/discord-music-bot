@@ -120,6 +120,9 @@ class MusicEventDiscordBot(commands.Bot):
             self.gateway,
             fallback_role_ids=fallback_roles,
             catchall_role_ids=catchall_roles,
+            # Last gate before the community sees anything: an event approved
+            # before its act joined the blocklist must not go out.
+            blocklist=app.blocklist,
         )
         # Discovery writes late-arriving artwork straight to SQLite. Hand it the
         # publication service so an event that was announced before its flyer

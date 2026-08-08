@@ -32,6 +32,7 @@ class Application:
     profile: TasteProfile
     sources: list[EventSource]
     discovery: DiscoveryOrchestrator
+    blocklist: Blocklist
 
     @classmethod
     async def create(cls, settings: Settings) -> Application:
@@ -100,4 +101,4 @@ class Application:
             genres=genre_classifier,
             blocklist=blocklist,
         )
-        return cls(settings, database, repository, profile, sources, discovery)
+        return cls(settings, database, repository, profile, sources, discovery, blocklist)

@@ -10,6 +10,7 @@ from music_event_bot.app import Application
 from music_event_bot.config import Settings
 from music_event_bot.discord.bot import MusicEventDiscordBot
 from music_event_bot.discord.publishing import event_embed
+from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.models import EventRecord, EventStatus
 
 
@@ -79,6 +80,7 @@ def _review_bot(repo: _ReviewRepoStub) -> MusicEventDiscordBot:
             repository=repo,
             discovery=SimpleNamespace(run=None),
             profile=SimpleNamespace(),
+            blocklist=Blocklist(),
         ),
     )
     return MusicEventDiscordBot(app)
@@ -248,6 +250,7 @@ async def test_bot_uses_non_reserved_application_state_attribute() -> None:
             repository=SimpleNamespace(),
             discovery=SimpleNamespace(run=None),
             profile=SimpleNamespace(),
+            blocklist=Blocklist(),
         ),
     )
 
@@ -293,6 +296,7 @@ async def test_sync_reviews_caps_new_posts_per_cycle() -> None:
             ),
             discovery=SimpleNamespace(run=None),
             profile=SimpleNamespace(),
+            blocklist=Blocklist(),
         ),
     )
     bot = MusicEventDiscordBot(app)

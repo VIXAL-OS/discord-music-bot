@@ -19,11 +19,29 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
-from music_event_bot.domain.models import DiscoveredEvent
 from music_event_bot.domain.normalization import normalize_text
 
 logger = logging.getLogger(__name__)
+
+
+class Bill(Protocol):
+    """The parts of an event that name who is playing.
+
+    Both DiscoveredEvent and EventRecord satisfy this. The blocklist has to
+    read stored records as well as fresh listings, because an act can be added
+    to the roster after its show was already ingested -- or published.
+    """
+
+    @property
+    def title(self) -> str: ...
+
+    @property
+    def artist(self) -> str | None: ...
+
+    @property
+    def artists(self) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +85,7 @@ class Blocklist:
     def __bool__(self) -> bool:
         return bool(self.entries)
 
-    def match(self, event: DiscoveredEvent) -> BlockedMatch | None:
+    def match(self, event: Bill) -> BlockedMatch | None:
         """The first blocked act found anywhere on the bill, or None.
 
         Checks the structured lineup first, since that is exact. The title is

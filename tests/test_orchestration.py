@@ -65,6 +65,9 @@ class RecordingRepository:
     async def published_with_closer_pending(self, *args: Any) -> list[tuple[str, str]]:
         return []
 
+    async def list_events(self, *statuses: Any, **kwargs: Any) -> list[EventRecord]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_out_of_radius_events_are_dropped_for_every_source(complete_event) -> None:
@@ -461,6 +464,9 @@ class _ArtworkRepository:
         return 0
 
     async def published_with_closer_pending(self, *args: Any) -> list[tuple[str, str]]:
+        return []
+
+    async def list_events(self, *statuses: Any, **kwargs: Any) -> list[EventRecord]:
         return []
 
 

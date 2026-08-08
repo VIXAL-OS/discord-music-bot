@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.models import EventRecord, EventStatus
 from music_event_bot.domain.normalization import normalize_text
 from music_event_bot.storage.repositories import EventRepository
@@ -37,9 +38,14 @@ class PublicationService:
         gateway: PublicationGateway,
         fallback_role_ids: frozenset[int] = frozenset(),
         catchall_role_ids: frozenset[int] | None = None,
+        blocklist: Blocklist | None = None,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
+        # Discovery filters the blocklist at ingest, which does nothing for an
+        # event that was already approved when the act was added to the roster.
+        # This is the last gate before anything reaches the community.
+        self.blocklist = blocklist or Blocklist()
         # Catch-all buckets ("Other Music", "Other Events") only ping when no
         # specific role matched; otherwise every event tagged "rock" would
         # also ping the catch-all community.
@@ -87,6 +93,16 @@ class PublicationService:
                 raise KeyError(f"Unknown event ID: {event_id}")
             publication = await self.repository.begin_publication(event_id)
             try:
+                # Inside the try on purpose: the existing handler records this
+                # as publish_failed, so the reason surfaces on the review card
+                # for a human to reject. Dropping it silently would read as a
+                # bug, and Retry deliberately keeps failing until someone does.
+                blocked = self.blocklist.match(event)
+                if blocked is not None:
+                    raise ValueError(
+                        f"{blocked.name} is on the artist blocklist "
+                        f"(matched on {blocked.matched_on}): {blocked.reason}"
+                    )
                 scheduled_id = publication.get("scheduled_event_id")
                 if scheduled_id:
                     scheduled_event_id = int(scheduled_id)

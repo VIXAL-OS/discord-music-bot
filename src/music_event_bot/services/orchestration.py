@@ -218,6 +218,36 @@ class DiscoveryOrchestrator:
         except Exception:
             logger.exception("Could not refresh the announcement for %s", event.id)
 
+    async def _warn_about_published_blocked_acts(self) -> None:
+        """Name published events whose bill is now on the blocklist.
+
+        The blocklist filters at ingest, so adding an act to the roster does
+        nothing about its shows that were already published: the announcement
+        stays up, and the curator job that mirrors published events keeps
+        exporting them to the community calendar. Nothing surfaced that, so two
+        shows by a blocked act sat on the shared calendar for two weeks -- one
+        of them written there the day *after* the act was blocked.
+
+        Retracting is a human decision, because the row is only half of it:
+        `repository.retract()` moves the record, but the announcement and any
+        calendar entry are external and have to come down by hand. So this
+        reports and does not act.
+        """
+        if not self.blocklist:
+            return
+        for event in await self.repository.list_events(EventStatus.PUBLISHED):
+            blocked = self.blocklist.match(event)
+            if blocked is None:
+                continue
+            logger.warning(
+                "Published event %r features blocked act %s (matched on %s): %s "
+                "-- retract it and take down the announcement and calendar entry",
+                event.title,
+                blocked.name,
+                blocked.matched_on,
+                blocked.reason,
+            )
+
     async def run(self) -> DiscoverySummary:
         started_at = datetime.now(UTC)
         local_now = datetime.now(self.settings.timezone)
@@ -348,6 +378,7 @@ class DiscoveryOrchestrator:
                 published_title,
                 closer_title,
             )
+        await self._warn_about_published_blocked_acts()
 
         summary = DiscoverySummary(
             discovered=discovered,
