@@ -18,5 +18,15 @@
     "name": "Grog Shop",
     "aliases": ["Grog Shop and B Side"],
     "note": "B Side is the downstairs bar of the same room; Ticketmaster listed one Show Me The Body bill under each name (2026-09-18)."
+  },
+  {
+    "name": "Crafthouse Stage & Grill",
+    "aliases": ["Crafthouse Stage and Grill"],
+    "note": "normalize_venue drops '&' but keeps the word 'and', so the two spellings key differently ('crafthouse stage grill' vs 'crafthouse stage and grill'). Ticketmaster writes it out, arcane.city uses the ampersand."
+  },
+  {
+    "name": "Carnegie of Homestead Music Hall",
+    "aliases": ["Carnegie of Homestead", "Carnegie Music Hall of Homestead", "Carnegie Library Music Hall of Homestead"],
+    "note": "Word order genuinely differs between sources, so no mechanical rule collapses these. Not to be confused with Carnegie Music Hall in Oakland, which is a different room in a different neighbourhood."
   }
 ]
