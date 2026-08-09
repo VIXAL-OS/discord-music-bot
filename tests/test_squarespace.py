@@ -116,3 +116,58 @@ async def test_one_failing_squarespace_site_does_not_lose_the_others(
 
     assert len(events) == 1
     assert events[0].source_event_id == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_squarespace_decodes_entities_in_venue_and_address(discovery_window) -> None:
+    """Only the item title was being unescaped, so venues arrived HTML-escaped.
+
+    A promoter collection surfaced "Don&#39;t Let the Scene Go Down On Me!
+    Collective" as a venue. The fingerprint is title|venue|start, so the same
+    room written escaped and unescaped is two different venues.
+    """
+    payload = _payload(
+        _item(
+            location={
+                "addressTitle": "Don&#39;t Let the Scene Go Down On Me!",
+                "addressLine1": "Smith &amp; Wesson Ave",
+                "addressLine2": "Pittsburgh, PA",
+            }
+        )
+    )
+    payload["website"] = {"siteTitle": "Roboto &amp; Friends"}
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://www.thegoldmark.com/events", params={"format": "json"}
+        ).mock(return_value=httpx.Response(200, json=payload))
+        async with httpx.AsyncClient() as client:
+            events = await SquarespaceSource(
+                ("https://www.thegoldmark.com/events",), client
+            ).discover(discovery_window)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.venue == "Don't Let the Scene Go Down On Me!"
+    assert event.location is not None
+    assert "Smith & Wesson Ave" in event.location
+    assert "&#39;" not in (event.venue or "")
+    assert "&amp;" not in (event.location or "")
+
+
+@pytest.mark.asyncio
+async def test_squarespace_site_title_is_decoded_when_no_address_title(
+    discovery_window,
+) -> None:
+    """The site title is the venue fallback, so it needs decoding too."""
+    payload = _payload(_item(location={"addressTitle": "", "addressLine1": "1 Main St"}))
+    payload["website"] = {"siteTitle": "Gooski&#39;s"}
+    with respx.mock(assert_all_called=True) as router:
+        router.get(
+            "https://www.thegoldmark.com/events", params={"format": "json"}
+        ).mock(return_value=httpx.Response(200, json=payload))
+        async with httpx.AsyncClient() as client:
+            events = await SquarespaceSource(
+                ("https://www.thegoldmark.com/events",), client
+            ).discover(discovery_window)
+
+    assert events[0].venue == "Gooski's"

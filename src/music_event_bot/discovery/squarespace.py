@@ -89,8 +89,12 @@ class SquarespaceSource:
         self, payload: dict[str, Any], configured_url: str, window: DiscoveryWindow
     ) -> list[DiscoveredEvent]:
         website = payload.get("website", {})
+        # Squarespace HTML-escapes these strings, so a venue whose name has an
+        # apostrophe or ampersand arrives as "Don&#39;t ..." and becomes part
+        # of the title|venue|start fingerprint that way. Only the item title
+        # was being decoded, which left the venue fields escaped.
         site_title = (
-            str(website.get("siteTitle", "")).strip()
+            html.unescape(str(website.get("siteTitle", ""))).strip()
             if isinstance(website, dict)
             else ""
         )
@@ -134,11 +138,11 @@ class SquarespaceSource:
         address_parts: list[str] = []
         venue = site_title or None
         if isinstance(location_data, dict):
-            address_title = str(location_data.get("addressTitle", "")).strip()
+            address_title = html.unescape(str(location_data.get("addressTitle", ""))).strip()
             if address_title:
                 venue = address_title
             for key in ("addressLine1", "addressLine2"):
-                value = str(location_data.get(key, "")).strip()
+                value = html.unescape(str(location_data.get(key, ""))).strip()
                 if value:
                     address_parts.append(value)
         location = ", ".join(address_parts) if address_parts else venue

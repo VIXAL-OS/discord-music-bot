@@ -238,3 +238,42 @@ async def test_calendar_description_genre_line(discovery_window, tmp_path: Path)
     assert event.genres == ("grindcore", "powerviolence")
     assert event.venue == "Mr. Roboto Project"
     assert "DIY show" in (event.description or "")
+
+
+_ENTITY_ICS = (
+    b"BEGIN:VCALENDAR\r\n"
+    b"VERSION:2.0\r\n"
+    b"PRODID:-//test//EN\r\n"
+    b"BEGIN:VEVENT\r\n"
+    b"UID:entity-1\r\n"
+    b"DTSTART:20260715T230000Z\r\n"
+    b"DTEND:20260716T020000Z\r\n"
+    b"SUMMARY:Ensiferum &amp; Firewind\r\n"
+    b"LOCATION:Gooski&#39;s\x5c, 3117 Brereton St\x5c, Pittsburgh\x5c, PA\r\n"
+    b"DESCRIPTION:Doors 7 PM.\r\n"
+    b"END:VEVENT\r\n"
+    b"END:VCALENDAR\r\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_calendar_decodes_html_entities_left_by_the_producer(
+    discovery_window, tmp_path: Path
+) -> None:
+    """ICS escapes with backslashes, so entities here are an upstream bug.
+
+    A calendar entry written by a tool that passed "&amp;" through literally
+    reached the database as `Ensiferum &amp; Firewind`. Since the fingerprint
+    is title|venue|start, the same show written escaped and unescaped is two
+    events -- which is how one gig ended up with two review cards.
+    """
+    local = tmp_path / "entities.ics"
+    local.write_bytes(_ENTITY_ICS)
+    events = await CalendarSource((str(local),)).discover(discovery_window)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.title == "Ensiferum & Firewind"
+    assert event.venue == "Gooski's"
+    assert "&amp;" not in event.title
+    assert "&#39;" not in (event.venue or "")

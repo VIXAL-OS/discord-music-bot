@@ -123,7 +123,7 @@ class CalendarSource:
         self, component: Any, source_url: str, window: DiscoveryWindow
     ) -> DiscoveredEvent | None:
         uid = str(component.get("UID", "")).strip()
-        title = str(component.get("SUMMARY", "")).strip()
+        title = html.unescape(str(component.get("SUMMARY", ""))).strip()
         if not uid or not title:
             return None
 
@@ -410,9 +410,17 @@ def _http_calendar_url(url: str) -> str:
 
 
 def _clean_ical_text(value: Any) -> str | None:
+    """Unfold ICS text and decode HTML entities a producer wrongly left in.
+
+    ICS escapes with backslashes, not entities, so anything HTML-escaped here
+    is an upstream bug -- most often a calendar entry written by a tool that
+    passed "&amp;" through as literal text. Untouched it reaches the venue and
+    title fields verbatim, and because the fingerprint is title|venue|start,
+    the same show written both ways becomes two events.
+    """
     if value is None:
         return None
-    text = str(value).replace("\\n", "\n").strip()
+    text = html.unescape(str(value).replace("\\n", "\n")).strip()
     return text or None
 
 
