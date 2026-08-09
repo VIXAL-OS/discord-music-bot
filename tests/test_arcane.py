@@ -293,3 +293,21 @@ async def test_raw_newlines_in_a_description_do_not_lose_the_flyer() -> None:
 async def test_source_faces_the_affinity_gate() -> None:
     """A whole-city listing gets no curation credit."""
     assert ArcaneCitySource().requires_affinity is True
+
+
+def test_performer_names_and_titles_are_unescaped() -> None:
+    """The detail page's JSON-LD escapes names the listing page leaves plain.
+
+    That asymmetry is why events existed with a clean title and an artist
+    reading "Star Viper &amp; Black Hole Zion" -- the title came from the
+    listing, the performers from the detail page. Both feed the
+    title|venue|start fingerprint and the artist-match scoring.
+    """
+    from music_event_bot.discovery.arcane import _performers
+
+    assert _performers(
+        [
+            {"name": "Star Viper &amp; Black Hole Zion"},
+            {"name": "Gooski&#39;s House Band"},
+        ]
+    ) == ("Star Viper & Black Hole Zion", "Gooski's House Band")

@@ -18,6 +18,11 @@ import json
 import logging
 import re
 from datetime import datetime
+
+# Imported as a bare name on purpose: this module uses "html" as a local and a
+# parameter name for page source, so "import html" would be shadowed at the
+# call sites below.
+from html import unescape
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -125,7 +130,10 @@ def _performers(value: Any) -> tuple[str, ...]:
     names = []
     for entry in entries:
         if isinstance(entry, dict) and isinstance(entry.get("name"), str):
-            name = entry["name"].strip()
+            # The detail page's JSON-LD escapes performer names even where the
+            # listing page does not, which is why an event could carry a clean
+            # title and an artist reading "Star Viper &amp; Black Hole Zion".
+            name = unescape(entry["name"]).strip()
             if name and name not in names:
                 names.append(name)
     return tuple(names)
@@ -263,7 +271,7 @@ class ArcaneCitySource:
         return DiscoveredEvent(
             source_name=self.name,
             source_event_id=url.rsplit("/", 1)[-1] or url,
-            title=title.strip(),
+            title=unescape(title).strip(),
             source_url=url,
             artist=artists[0] if artists else None,
             artists=artists,

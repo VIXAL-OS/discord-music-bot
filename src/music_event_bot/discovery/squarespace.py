@@ -49,8 +49,16 @@ class SquarespaceSource:
     """Discover events from Squarespace event collections.
 
     Squarespace sites expose collections as JSON via ``?format=json`` even
-    when they offer no ICS/RSS feed. Like the calendar/RSS sources, these are
-    hand-curated venue feeds, so they are not subject to the affinity gate.
+    when they offer no ICS/RSS feed.
+
+    These are hand-curated venue feeds, but they are NOT exempt from the
+    affinity gate -- the gate is universal for every automated source, and
+    being curated only adds a reason label. That matters because Squarespace
+    collections frequently populate no categories or tags, so their events
+    arrive with no genres and score zero affinity. A promoter feed added on
+    2026-08-08 parsed 26 events and passed exactly one for that reason. If a
+    feed's rooms should reach review regardless of taste, that is a
+    trusted-venue or scoring decision, not something this source can fix.
     """
 
     name = "squarespace"
