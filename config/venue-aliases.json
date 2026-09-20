@@ -15,6 +15,11 @@
     "note": "Deliberately does NOT cover 'The Funhouse at Mr Smalls' -- that is a separate room in the same building and books its own bills."
   },
   {
+    "name": "The Mr. Roboto Project",
+    "aliases": ["Roboto Project", "Roboto"],
+    "note": "The volunteer-run all-ages DIY co-op at 5106 Penn Ave. normalize_venue strips a leading 'The' but nothing collapses 'roboto project' against 'mr roboto project', so arcane.city's 'Roboto Project' and the venue's own 'The Mr. Roboto Project' fingerprint apart. That published the Basement Castration bill twice on 2026-09-05, once from each source. Unlike Mr Smalls and Bottlerocket, Roboto is a single room, so there is no second stage for a shared prefix to merge by mistake."
+  },
+  {
     "name": "Grog Shop",
     "aliases": ["Grog Shop and B Side"],
     "note": "B Side is the downstairs bar of the same room; Ticketmaster listed one Show Me The Body bill under each name (2026-09-18)."
@@ -23,6 +28,16 @@
     "name": "Crafthouse Stage & Grill",
     "aliases": ["Crafthouse Stage and Grill"],
     "note": "normalize_venue drops '&' but keeps the word 'and', so the two spellings key differently ('crafthouse stage grill' vs 'crafthouse stage and grill'). Ticketmaster writes it out, arcane.city uses the ampersand."
+  },
+  {
+    "name": "Little Giant",
+    "aliases": ["Little Giant Studio", "Little Giant Rehearsal Studio", "Bottlerocket Social Hall — Little Giant"],
+    "note": "Bottlerocket's warehouse and rehearsal room in Allentown (100 Asteroid Way), booked separately from the 200-cap main bar. Deliberately does NOT alias onto 'Bottlerocket Social Hall' -- same operator, different room, concurrent bills, exactly like Mr Smalls and its Funhouse. Songkick files it as 'Little Giant Studio', arcane.city as bare 'Little Giant'. Bottlerocket's own Opendate feed is the gap this cannot close: it sells these under venue 'Bottlerocket Social Hall' and puts '(at Little Giant)' in the TITLE, where no venue alias reaches."
+  },
+  {
+    "name": "Club 1740",
+    "aliases": ["The Eagle", "Pittsburgh Eagle", "The Pittsburgh Eagle", "S.A.P.P."],
+    "note": "One four-floor North Side building at 1740 Eckert St, running house/techno/DnB club nights (SPIN, monthly). The original Pittsburgh Eagle closed in 2012 and Pegasus, its successor in the lower floors, closed after that -- but the name never died: arcane.city still files the room as 'The Eagle' and the bot published SPIN August 2026 under it, so this is a live spelling, not a historical one. The Instagram bio adds a third, 'The Pittsburgh Eagle (S.A.P.P.)'. Canonical is 'Club 1740' per the venue list (2026-08-30); the scrape adds under that name and arcane's 'The Eagle' collapses onto it."
   },
   {
     "name": "Carnegie of Homestead Music Hall",
