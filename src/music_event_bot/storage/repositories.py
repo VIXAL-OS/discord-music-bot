@@ -1332,6 +1332,98 @@ class EventRepository:
         ranked = sorted(votes.items(), key=lambda item: (-item[1][0], item[1][1]))
         return tuple(role_id for role_id, _ in ranked)
 
+    async def list_genre_roles(self) -> dict[str, int]:
+        async with self.database.connect() as connection:
+            cursor = await connection.execute("SELECT genre, role_id FROM genre_roles")
+            return {str(row["genre"]): int(row["role_id"]) for row in await cursor.fetchall()}
+
+    async def list_user_profiles(self) -> dict[int, dict[str, Any]]:
+        async with self.database.connect() as connection:
+            cursor = await connection.execute("SELECT * FROM user_profiles")
+            return {int(row["user_id"]): dict(row) for row in await cursor.fetchall()}
+
+    async def list_user_taste(self, kind: str) -> dict[int, set[str]]:
+        """Every member's values for one taste kind, positive weights only.
+
+        A negative weight is "stop showing me this", so it must not read back
+        as evidence the member already holds that genre.
+        """
+        grouped: dict[int, set[str]] = {}
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT user_id, value FROM user_taste WHERE kind = ? AND weight > 0", (kind,)
+            )
+            for row in await cursor.fetchall():
+                grouped.setdefault(int(row["user_id"]), set()).add(str(row["value"]))
+        return grouped
+
+    async def upsert_user_profile(
+        self,
+        user_id: int,
+        *,
+        display_name: str,
+        metro: str,
+        travel_band: str,
+        daily_ping_cap: int,
+        source: str,
+    ) -> None:
+        """Create or refresh a profile, never clobbering hand-tuned settings.
+
+        Only display_name is refreshed on conflict: metro, travel band and cap
+        are the member's to set, and a re-run of the seed must not reset them.
+        """
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            await connection.execute(
+                """
+                INSERT INTO user_profiles(
+                    user_id, display_name, metro, travel_band, daily_ping_cap,
+                    source, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(user_id),
+                    display_name,
+                    metro,
+                    travel_band,
+                    daily_ping_cap,
+                    source,
+                    now,
+                    now,
+                ),
+            )
+            await connection.commit()
+
+    async def add_user_taste(
+        self, user_id: int, kind: str, values: tuple[str, ...], *, source: str, weight: int = 1
+    ) -> int:
+        """Add taste rows for a member; rows that already exist are left alone.
+
+        Deliberately does not update on conflict: a member who demoted a genre
+        to a negative weight must not have the seed promote it back.
+        """
+        if not values:
+            return 0
+        now = _now().isoformat()
+        added = 0
+        async with self.database.connect() as connection:
+            for value in values:
+                cursor = await connection.execute(
+                    """
+                    INSERT INTO user_taste(user_id, kind, value, weight, source, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, kind, value) DO NOTHING
+                    """,
+                    (str(user_id), kind, value, weight, source, now),
+                )
+                added += cursor.rowcount or 0
+            await connection.commit()
+        return added
+
     async def known_genres(self) -> tuple[str, ...]:
         """Every genre that resolves to a community role.
 

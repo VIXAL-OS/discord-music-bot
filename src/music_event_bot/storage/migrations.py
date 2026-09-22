@@ -166,6 +166,39 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         ALTER TABLE publications ADD COLUMN announcement_channel_id TEXT;
         """,
     ),
+    (
+        9,
+        """
+        CREATE TABLE user_profiles (
+            user_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL DEFAULT '',
+            metro TEXT NOT NULL,
+            travel_band TEXT NOT NULL DEFAULT 'road-trip',
+            daily_ping_cap INTEGER NOT NULL DEFAULT 5,
+            delivery TEXT NOT NULL DEFAULT 'mention'
+                CHECK (delivery IN ('mention', 'firehose', 'off')),
+            source TEXT NOT NULL DEFAULT 'role-seed',
+            customized_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE user_taste (
+            user_id TEXT NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK (kind IN ('genre', 'artist', 'venue')),
+            value TEXT NOT NULL,
+            -- Signed on purpose: positive is interest, negative is "stop
+            -- showing me this". Nothing writes a negative yet, but RSVP
+            -- history will, and that must not cost a second migration.
+            weight INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'role-seed',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, kind, value)
+        );
+
+        CREATE INDEX idx_user_taste_lookup ON user_taste(kind, value);
+        """,
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

@@ -22,6 +22,7 @@ from music_event_bot.discord.rsvp import RsvpView
 from music_event_bot.discovery.manual import manual_event
 from music_event_bot.domain.models import EventRecord, EventStatus
 from music_event_bot.domain.scoring import score_event
+from music_event_bot.services.profiles import GuildMember
 from music_event_bot.services.publishing import PublicationService
 from music_event_bot.services.request_parser import RequestEventParser
 from music_event_bot.services.scheduler import BotScheduler
@@ -222,6 +223,30 @@ class MusicEventDiscordBot(commands.Bot):
         await start_task
         if self._sync_error:
             raise self._sync_error
+
+    async def collect_guild_members(self) -> list[GuildMember]:
+        """Every human member with the roles they hold.
+
+        Uses the REST member list rather than the gateway cache: the cache is
+        only populated once chunking finishes, which a one-shot CLI run does
+        not wait for.
+        """
+        guild_id = self.settings.discord_guild_id
+        if guild_id is None:
+            raise RuntimeError("Discord guild ID is missing")
+        guild = self.get_guild(guild_id) or await self.fetch_guild(guild_id)
+        members: list[GuildMember] = []
+        async for member in guild.fetch_members(limit=None):
+            if member.bot:
+                continue
+            members.append(
+                GuildMember(
+                    user_id=member.id,
+                    display_name=member.display_name,
+                    role_ids=tuple(role.id for role in member.roles),
+                )
+            )
+        return members
 
     async def drain_publication_queue(self) -> int:
         published = await self.publication_service.drain_approved(

@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     # the bot refuse to start: flip the portal toggle first, then this.
     # seed-profiles needs it to read who holds which genre role.
     members_intent: bool = False
+    # Default daily ping budget for a seeded profile. Anything past it
+    # queues for the next day's catch-up post rather than being dropped.
+    default_daily_ping_cap: int = 5
     admin_user_ids: str = ""
     reviewer_role_ids: str = ""
     genre_role_map: str = "{}"

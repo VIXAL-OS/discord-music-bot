@@ -8,6 +8,7 @@ import os
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from music_event_bot.app import Application
 from music_event_bot.config import Settings
@@ -144,6 +145,24 @@ def _parser() -> argparse.ArgumentParser:
         help="Also merge duplicates that already announced to Discord. The "
         "announcement and scheduled event are NOT removed -- delete those by hand",
     )
+    seed_parser = subparsers.add_parser(
+        "seed-profiles",
+        help="Seed per-user taste profiles from the genre roles members hold",
+    )
+    seed_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the profiles. Without it this is a dry run that changes nothing.",
+    )
+    seed_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicitly request the default dry run",
+    )
+    seed_parser.add_argument(
+        "--metro",
+        help="Home metro for newly seeded profiles (default: the metro nearest home)",
+    )
     subparsers.add_parser("review-sync", help="Connect to Discord and reconcile review cards")
     subparsers.add_parser("bot", help="Run the Discord bot and scheduler")
     spotify_parser = subparsers.add_parser(
@@ -217,6 +236,11 @@ async def _run(args: argparse.Namespace) -> None:
                         settings.discovery_start_offset_days,
                         settings.discovery_horizon_days,
                     ],
+                },
+                "personal_delivery": {
+                    "mode": settings.personal_delivery,
+                    "profiles": len(await app.repository.list_user_profiles()),
+                    "default_daily_ping_cap": settings.default_daily_ping_cap,
                 },
                 "taste": {
                     "artists": len(app.profile.artists),
@@ -356,6 +380,79 @@ async def _run(args: argparse.Namespace) -> None:
     from music_event_bot.discord.bot import MusicEventDiscordBot
 
     bot = MusicEventDiscordBot(app)
+    if args.command == "seed-profiles":
+        if args.apply and args.dry_run:
+            raise ValueError("--apply and --dry-run are mutually exclusive")
+        if not settings.members_intent:
+            raise ValueError(
+                "seed-profiles needs the Server Members intent. Enable it under "
+                "Bot > Privileged Gateway Intents in the Discord Developer Portal, "
+                "then set MUSICBOT_MEMBERS_INTENT=true."
+            )
+        from music_event_bot.domain.metros import metro as lookup_metro
+        from music_event_bot.domain.metros import nearest_metro
+        from music_event_bot.domain.normalization import normalize_text
+        from music_event_bot.services.profiles import (
+            apply_role_seed,
+            bucket_genre_roles,
+            plan_role_seed,
+            summarize,
+        )
+
+        home_metro = (
+            lookup_metro(args.metro) if args.metro else nearest_metro(settings.home_point)
+        )
+        members: list[Any] = []
+
+        async def _collect() -> None:
+            members.extend(await bot.collect_guild_members())
+
+        await bot.run_once(_collect, "member collection")
+
+        # Only the configured buckets, not the hundreds of tag aliases
+        # seed_genre_role_aliases derives into genre_roles on every startup.
+        # Those aliases are how an event's genres are *recognised*, and they
+        # improve over time; freezing a snapshot of them into a member's
+        # profile would both be unreadable and cut that member off from every
+        # later improvement. Matching resolves event genres through the live
+        # alias table instead.
+        role_genres = bucket_genre_roles(
+            await app.repository.list_genre_roles(),
+            {normalize_text(genre) for genre in settings.role_map},
+        )
+        actions = plan_role_seed(
+            members,
+            role_genres,
+            await app.repository.list_user_profiles(),
+            await app.repository.list_user_taste("genre"),
+            default_metro=home_metro.key,
+        )
+        seed_report: dict[str, Any] = {
+            "applied": bool(args.apply),
+            "members_scanned": len(members),
+            "genre_roles": len(role_genres),
+            "default_metro": home_metro.key,
+            "counts": summarize(actions),
+            # Named members, not just counts: the point of the dry run is to
+            # see whether anyone would end up with no genres at all before
+            # per-user delivery makes that mean silence.
+            "members": [
+                {
+                    "user_id": str(action.user_id),
+                    "display_name": action.display_name,
+                    "action": action.action,
+                    "genres": list(action.genres),
+                    "adds": list(action.added_genres),
+                }
+                for action in sorted(actions, key=lambda item: item.display_name.casefold())
+            ],
+        }
+        if args.apply:
+            seed_report["written"] = await apply_role_seed(
+                app.repository, actions, daily_ping_cap=settings.default_daily_ping_cap
+            )
+        print(json.dumps(seed_report, indent=2, default=str))
+        return
     if args.command == "review-sync":
         await bot.run_sync_once()
     else:
