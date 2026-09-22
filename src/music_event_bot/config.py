@@ -73,6 +73,18 @@ class Settings(BaseSettings):
     # likely to be in town than four states away, and hiding it is worse
     # than announcing it.
     local_radius_miles: int = 75
+    # Rollout lever for per-user delivery. "off" is today's behaviour: events
+    # ping the genre roles they map to. "shadow" additionally computes the
+    # per-user mention list and logs what it would have sent, changing
+    # nothing anyone sees. "on" replaces role pings with per-user mentions.
+    # genre_role_map is never modified, so dropping back to "off" is a
+    # restart with no data loss.
+    personal_delivery: str = "off"
+    # Request the privileged Server Members intent. Off by default because
+    # asking for an intent that is not enabled in the Developer Portal makes
+    # the bot refuse to start: flip the portal toggle first, then this.
+    # seed-profiles needs it to read who holds which genre role.
+    members_intent: bool = False
     admin_user_ids: str = ""
     reviewer_role_ids: str = ""
     genre_role_map: str = "{}"
@@ -225,6 +237,17 @@ class Settings(BaseSettings):
         if not 0 <= value <= 24:
             raise ValueError("publish hours must be between 0 and 24")
         return value
+
+    @field_validator("personal_delivery")
+    @classmethod
+    def _validate_personal_delivery(cls, value: str) -> str:
+        allowed = {"off", "shadow", "on"}
+        normalized = value.strip().casefold()
+        if normalized not in allowed:
+            raise ValueError(
+                f"personal_delivery must be one of {', '.join(sorted(allowed))}, got {value!r}"
+            )
+        return normalized
 
     @field_validator("ticketmaster_country_code")
     @classmethod

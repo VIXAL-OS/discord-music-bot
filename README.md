@@ -142,6 +142,7 @@ Every setting uses the `MUSICBOT_` prefix. See `.env.example` for the full list.
 | `MUSICBOT_ANNOUNCEMENT_CHANNEL_ID` | Public event announcement channel |
 | `MUSICBOT_REGIONAL_ANNOUNCEMENT_CHANNEL_ID` | Optional second channel for shows beyond `MUSICBOT_LOCAL_RADIUS_MILES`, posted there with no role ping. Blank = one channel for everything |
 | `MUSICBOT_LOCAL_RADIUS_MILES` | Local/regional boundary in miles (default 75). Venues with no coordinates count as local |
+| `MUSICBOT_PERSONAL_DELIVERY` | Per-user delivery rollout: `off` (role pings), `shadow` (log what per-user mentions would send), `on` (mentions replace role pings). Default `off` |
 | `MUSICBOT_ADMIN_USER_IDS` | Comma-separated authorized user IDs |
 | `MUSICBOT_REVIEWER_ROLE_IDS` | Comma-separated authorized role IDs; either this or admin IDs is required |
 | `MUSICBOT_GENRE_ROLE_MAP` | JSON object mapping normalized genres to role IDs |

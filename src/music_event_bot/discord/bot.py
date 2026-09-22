@@ -94,6 +94,13 @@ class MusicEventDiscordBot(commands.Bot):
         # Privileged, enabled in the Developer Portal: lets @mention requests
         # read the surrounding conversation ("event card for this pls?").
         intents.message_content = True
+        # Also privileged, and required to read who holds which genre role --
+        # without it the roster is empty and seed-profiles has nothing to
+        # seed from. The REST member list is gated on the same portal toggle,
+        # so there is no way around enabling it there too. Off unless asked
+        # for: requesting an intent the portal has not granted makes the
+        # gateway refuse the connection outright.
+        intents.members = app.settings.members_intent
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.music_app = app
         self.settings = app.settings
