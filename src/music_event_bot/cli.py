@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from dataclasses import asdict
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -162,6 +162,13 @@ def _parser() -> argparse.ArgumentParser:
     seed_parser.add_argument(
         "--metro",
         help="Home metro for newly seeded profiles (default: the metro nearest home)",
+    )
+    report_parser = subparsers.add_parser(
+        "delivery-report",
+        help="Replay recent announcements through per-user delivery and report the difference",
+    )
+    report_parser.add_argument(
+        "--days", type=_positive_int, default=14, help="How far back to replay (default 14)"
     )
     subparsers.add_parser("review-sync", help="Connect to Discord and reconcile review cards")
     subparsers.add_parser("bot", help="Run the Discord bot and scheduler")
@@ -374,6 +381,109 @@ async def _run(args: argparse.Namespace) -> None:
             )
             result["announcement_updated"] = True
         print(json.dumps(result, indent=2, default=str))
+        return
+
+    if args.command == "delivery-report":
+        from collections import Counter
+        from datetime import timedelta
+
+        from music_event_bot.services.delivery import (
+            apply_daily_caps,
+            build_profiles,
+            match_users,
+            roles_for_event,
+        )
+
+        profiles = build_profiles(
+            await app.repository.list_user_profiles(),
+            await app.repository.list_user_taste("genre"),
+            settings.bucket_role_map,
+        )
+        if not profiles:
+            raise ValueError("No profiles to report on; run seed-profiles --apply first")
+        fallback = frozenset(
+            role_id
+            for genre, role_id in settings.role_map.items()
+            if genre.startswith("other")
+        )
+        since = datetime.now(UTC) - timedelta(days=args.days)
+        announced = await app.repository.list_announced_events(since)
+        sequence = [
+            (
+                announced_at,
+                match_users(
+                    event,
+                    await roles_for_event(
+                        app.repository, event, fallback_role_ids=fallback
+                    ),
+                    profiles,
+                ),
+            )
+            for event, announced_at in announced
+        ]
+        capped = apply_daily_caps(sequence, profiles, settings.timezone)
+
+        # Three numbers per member, so the reduction is attributable: taste
+        # alone is what their roles already gave them, then the metro, then
+        # the cap.
+        taste = Counter[int]()
+        in_band = Counter[int]()
+        pinged = Counter[int]()
+        busiest: dict[int, Counter[str]] = {}
+        for announced_at, matches in capped:
+            day = announced_at.astimezone(settings.timezone).date().isoformat()
+            for match in matches:
+                taste[match.user_id] += 1
+                if match.within_band:
+                    in_band[match.user_id] += 1
+                    # Counted before the cap on purpose: capped days all look
+                    # identical, so only the uncapped load says whether the
+                    # cap binds and how much lands in the catch-up post.
+                    busiest.setdefault(match.user_id, Counter())[day] += 1
+                if match.pinged:
+                    pinged[match.user_id] += 1
+        days = max(1, args.days)
+        rows = []
+        for user_id, profile in profiles.items():
+            peak = busiest.get(user_id, Counter()).most_common(1)
+            rows.append(
+                {
+                    "member": profile.display_name,
+                    "metro": profile.metro,
+                    "travel_band": profile.travel_band,
+                    "daily_cap": profile.daily_ping_cap,
+                    "role_pings_today": round(taste[user_id] / days, 1),
+                    "after_metro_today": round(in_band[user_id] / days, 1),
+                    "after_cap_today": round(pinged[user_id] / days, 1),
+                    "queued_total": in_band[user_id] - pinged[user_id],
+                    "busiest_day": peak[0][1] if peak else 0,
+                }
+            )
+        rows.sort(key=lambda row: -float(row["role_pings_today"]))
+        print(
+            json.dumps(
+                {
+                    "window_days": args.days,
+                    "announcements_replayed": len(announced),
+                    "announcements_per_day": round(len(announced) / days, 1),
+                    "busiest_announcement_day": max(
+                        (
+                            Counter(
+                                at.astimezone(settings.timezone).date().isoformat()
+                                for at, _matches in capped
+                            ).values()
+                        ),
+                        default=0,
+                    ),
+                    "events_matching_nobody": sum(
+                        1 for _at, matches in capped if not any(m.within_band for m in matches)
+                    ),
+                    "members": rows,
+                },
+                indent=2,
+                default=str,
+            )
+        )
         return
 
     settings.require_discord()

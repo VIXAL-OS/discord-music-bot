@@ -358,6 +358,15 @@ class Settings(BaseSettings):
         return result
 
     @property
+    def bucket_role_map(self) -> dict[str, int]:
+        """The configured buckets only, keyed the way taste rows are stored.
+
+        role_map is keyed by casefolded genre; genre_roles and user_taste both
+        hold normalize_text output, and the two disagree on punctuation.
+        """
+        return {normalize_text(genre): role_id for genre, role_id in self.role_map.items()}
+
+    @property
     def home_point(self) -> GeoPoint:
         if self.discovery_latitude is not None and self.discovery_longitude is not None:
             return GeoPoint(self.discovery_latitude, self.discovery_longitude)

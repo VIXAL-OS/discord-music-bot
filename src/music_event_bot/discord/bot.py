@@ -135,6 +135,8 @@ class MusicEventDiscordBot(commands.Bot):
             regional_announcement_channel_id=self.settings.regional_announcement_channel_id,
             home=self.settings.home_point,
             local_radius_miles=self.settings.local_radius_miles,
+            personal_delivery=self.settings.personal_delivery,
+            bucket_roles=self.settings.bucket_role_map,
         )
         # Discovery writes late-arriving artwork straight to SQLite. Hand it the
         # publication service so an event that was announced before its flyer

@@ -1332,6 +1332,32 @@ class EventRepository:
         ranked = sorted(votes.items(), key=lambda item: (-item[1][0], item[1][1]))
         return tuple(role_id for role_id, _ in ranked)
 
+    async def list_announced_events(
+        self, since: datetime
+    ) -> list[tuple[EventRecord, datetime]]:
+        """Published events paired with when their announcement went out.
+
+        publications.updated_at is when mark_published last touched the row,
+        which for a published event is the announcement. Good enough to
+        replay the day's sequence, which is all the cap needs.
+        """
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT e.*, p.updated_at AS announced_at
+                FROM events e JOIN publications p ON p.event_id = e.id
+                WHERE p.state = 'published' AND p.updated_at >= ?
+                ORDER BY p.updated_at
+                """,
+                (since.astimezone(UTC).isoformat(),),
+            )
+            results: list[tuple[EventRecord, datetime]] = []
+            for row in await cursor.fetchall():
+                announced = _parse_datetime(row["announced_at"])
+                if announced is not None:
+                    results.append((_event_from_row(row), announced))
+            return results
+
     async def list_genre_roles(self) -> dict[str, int]:
         async with self.database.connect() as connection:
             cursor = await connection.execute("SELECT genre, role_id FROM genre_roles")

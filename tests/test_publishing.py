@@ -645,3 +645,75 @@ async def test_legacy_card_without_a_stored_channel_is_edited_in_the_main_channe
     await _split_service(repository, gateway).update_existing(event.id)
 
     assert gateway.update_channels == [_MAIN_CHANNEL]
+
+
+@pytest.mark.asyncio
+async def test_shadow_mode_changes_nothing_that_goes_out(
+    repository, complete_event, caplog
+) -> None:
+    """The point of shadow is that it is measurable and invisible: the
+    announcement still pings the roles it always did."""
+    event = await _approved_at(repository, complete_event, _LOCAL_COORDS, "shadow")
+    await repository.seed_genre_roles({"indie rock": 1})
+    await repository.upsert_user_profile(
+        7,
+        display_name="Avery",
+        metro="pittsburgh",
+        travel_band="road-trip",
+        daily_ping_cap=5,
+        source="role-seed",
+    )
+    await repository.add_user_taste(7, "genre", ("indie rock",), source="role-seed")
+    gateway = FakePublicationGateway()
+    service = PublicationService(
+        repository,
+        gateway,
+        announcement_channel_id=_MAIN_CHANNEL,
+        personal_delivery="shadow",
+        bucket_roles={"indie rock": 1},
+    )
+
+    with caplog.at_level("INFO"):
+        await service.publish(event.id)
+
+    assert gateway.announcement_calls == [(event.id, (1,), 7001)]
+    assert "Shadow delivery" in caplog.text and "Avery" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shadow_reports_a_member_the_metro_filter_would_drop(
+    repository, complete_event, caplog
+) -> None:
+    event = await _approved_at(repository, complete_event, _TORONTO_COORDS, "shadow-far")
+    await repository.seed_genre_roles({"indie rock": 1})
+    await repository.upsert_user_profile(
+        7,
+        display_name="Avery",
+        metro="pittsburgh",
+        travel_band="in-town",
+        daily_ping_cap=5,
+        source="role-seed",
+    )
+    await repository.add_user_taste(7, "genre", ("indie rock",), source="role-seed")
+    gateway = FakePublicationGateway()
+    service = PublicationService(
+        repository,
+        gateway,
+        announcement_channel_id=_MAIN_CHANNEL,
+        personal_delivery="shadow",
+        bucket_roles={"indie rock": 1},
+    )
+
+    with caplog.at_level("INFO"):
+        await service.publish(event.id)
+
+    assert "0 member(s) in range, 1 filtered by metro" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_delivery_off_does_no_profile_work(repository, complete_event, caplog) -> None:
+    event = await _approved_at(repository, complete_event, _LOCAL_COORDS, "no-shadow")
+    gateway = FakePublicationGateway()
+    with caplog.at_level("INFO"):
+        await PublicationService(repository, gateway).publish(event.id)
+    assert "Shadow delivery" not in caplog.text

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.models import EventRecord, EventStatus
-from music_event_bot.domain.normalization import normalize_text
+from music_event_bot.services.delivery import build_profiles, match_users, roles_for_event
 from music_event_bot.storage.repositories import EventRepository
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,8 @@ class PublicationService:
         regional_announcement_channel_id: int | None = None,
         home: GeoPoint | None = None,
         local_radius_miles: int = 0,
+        personal_delivery: str = "off",
+        bucket_roles: dict[str, int] | None = None,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
@@ -72,6 +74,11 @@ class PublicationService:
         self.regional_channel_id = regional_announcement_channel_id
         self.home = home
         self.local_radius_miles = local_radius_miles
+        # Shadow mode: work out the per-user mention list and log it without
+        # sending it, so the flip can be measured against a week of real
+        # announcements before anyone's notifications change.
+        self.personal_delivery = personal_delivery
+        self.bucket_roles = bucket_roles or {}
         # Discovery filters the blocklist at ingest, which does nothing for an
         # event that was already approved when the act was added to the roster.
         # This is the last gate before anything reaches the community.
@@ -88,33 +95,39 @@ class PublicationService:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def _roles_for(self, event: EventRecord) -> tuple[int, ...]:
-        roles = await self.repository.get_roles_for_genres(event.genres)
-        specific = tuple(role for role in roles if role not in self.fallback_role_ids)
-        if specific:
-            return specific
-        # The source's genre labels matched no mapped role. Before settling
-        # for the catch-all, let the lineup's cached artist tags vote for
-        # genre buckets the same way discovery scoring does.
-        artists = {normalize_text(name) for name in (*event.artists, event.artist or "")}
-        artists.discard("")
-        if artists:
-            tags = await self.repository.get_tags_for_artists(artists)
-            if tags:
-                mappings = await self.repository.get_tag_mappings(tags)
-                buckets = tuple(
-                    bucket for bucket_list, _broad in mappings.values() for bucket in bucket_list
-                )
-                bucket_roles = await self.repository.get_roles_for_genres(buckets)
-                bucket_specific = tuple(
-                    role for role in bucket_roles if role not in self.fallback_role_ids
-                )
-                if bucket_specific:
-                    return bucket_specific
-        if roles:
-            return roles
-        # Nothing matched anywhere: ping the music catch-all rather than
-        # publishing silently.
-        return tuple(sorted(self.catchall_role_ids))
+        return await roles_for_event(
+            self.repository,
+            event,
+            fallback_role_ids=self.fallback_role_ids,
+            catchall_role_ids=self.catchall_role_ids,
+        )
+
+    async def _log_shadow_delivery(self, event: EventRecord) -> None:
+        """Log who per-user delivery would mention. Sends nothing.
+
+        The daily cap is deliberately not applied: whether a match is pinged
+        or queued depends on everything else that went out that day, which a
+        single publish cannot see. delivery-report replays the sequence and
+        applies caps there.
+        """
+        if self.personal_delivery == "off":
+            return
+        rows = await self.repository.list_user_profiles()
+        if not rows:
+            logger.info("Shadow delivery: no profiles seeded, %r would mention nobody", event.title)
+            return
+        profiles = build_profiles(
+            rows, await self.repository.list_user_taste("genre"), self.bucket_roles
+        )
+        matches = match_users(event, await self._roles_for(event), profiles)
+        in_band = [match for match in matches if match.within_band]
+        logger.info(
+            "Shadow delivery for %r: %d member(s) in range, %d filtered by metro (uncapped): %s",
+            event.title,
+            len(in_band),
+            len(matches) - len(in_band),
+            ", ".join(match.display_name for match in in_band) or "nobody",
+        )
 
     def _is_regional(self, event: EventRecord) -> bool:
         if self.regional_channel_id is None or self.home is None or self.local_radius_miles <= 0:
@@ -198,6 +211,7 @@ class PublicationService:
                         event_id, announcement_message_id, routing.channel_id
                     )
 
+                await self._log_shadow_delivery(event)
                 await self.repository.mark_published(event_id)
             except Exception as exc:
                 await self.repository.mark_publish_failed(event_id, str(exc))
