@@ -124,9 +124,13 @@ class DiscordPublicationGateway:
         return scheduled.id
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int | None
+        self,
+        event: EventRecord,
+        role_ids: tuple[int, ...],
+        scheduled_event_id: int | None,
+        channel_id: int | None = None,
     ) -> int:
-        channel = await self._announcement_channel()
+        channel = await self._announcement_channel(channel_id)
         marker = event_marker(event.id)
         async for message in channel.history(limit=100):
             if message.author.id == self.bot.user.id and any(
@@ -160,6 +164,7 @@ class DiscordPublicationGateway:
         scheduled_event_id: int | None,
         announcement_message_id: int,
         role_ids: tuple[int, ...],
+        channel_id: int | None = None,
     ) -> None:
         if event.starts_at is None or not event.venue or not event.location:
             raise ValueError("Published events require a start time, venue, and location")
@@ -182,7 +187,7 @@ class DiscordPublicationGateway:
             )
         from music_event_bot.discord.rsvp import RsvpView, announcement_embed
 
-        channel = await self._announcement_channel()
+        channel = await self._announcement_channel(channel_id)
         message = await channel.fetch_message(announcement_message_id)
         suffix = "Updated show listing"
         if scheduled_event_id is not None:
@@ -208,8 +213,12 @@ class DiscordPublicationGateway:
             guild = await self.bot.fetch_guild(self.settings.discord_guild_id)
         return guild
 
-    async def _announcement_channel(self) -> discord.TextChannel:
-        channel_id = self.settings.announcement_channel_id
+    async def _announcement_channel(self, channel_id: int | None = None) -> discord.TextChannel:
+        # The caller passes the channel its routing chose (or the one an
+        # existing card was posted in); the setting is only the fallback for
+        # announcements recorded before the local/regional split existed.
+        if channel_id is None:
+            channel_id = self.settings.announcement_channel_id
         if channel_id is None:
             raise RuntimeError("Announcement channel ID is missing")
         channel = self.bot.get_channel(channel_id)

@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from music_event_bot.domain.blocklist import Blocklist
+from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.models import EventRecord, EventStatus
 from music_event_bot.domain.normalization import normalize_text
 from music_event_bot.storage.repositories import EventRepository
@@ -15,11 +17,24 @@ from music_event_bot.storage.repositories import EventRepository
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class AnnouncementRouting:
+    """Where an announcement goes and who it pings."""
+
+    channel_id: int | None
+    role_ids: tuple[int, ...]
+    is_regional: bool
+
+
 class PublicationGateway(Protocol):
     async def create_or_find_scheduled_event(self, event: EventRecord) -> int | None: ...
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int | None
+        self,
+        event: EventRecord,
+        role_ids: tuple[int, ...],
+        scheduled_event_id: int | None,
+        channel_id: int | None = None,
     ) -> int: ...
 
     async def update_published_event(
@@ -28,6 +43,7 @@ class PublicationGateway(Protocol):
         scheduled_event_id: int | None,
         announcement_message_id: int,
         role_ids: tuple[int, ...],
+        channel_id: int | None = None,
     ) -> None: ...
 
 
@@ -39,9 +55,23 @@ class PublicationService:
         fallback_role_ids: frozenset[int] = frozenset(),
         catchall_role_ids: frozenset[int] | None = None,
         blocklist: Blocklist | None = None,
+        announcement_channel_id: int | None = None,
+        regional_announcement_channel_id: int | None = None,
+        home: GeoPoint | None = None,
+        local_radius_miles: int = 0,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
+        # Shows beyond local_radius_miles are announced in their own channel
+        # with no role ping. Role mentions are a union, never an
+        # intersection: a member who wants goth shows in town but not four
+        # states away cannot express that by holding or dropping roles, so
+        # the split has to happen before Discord sees the message. With no
+        # regional channel configured, everything routes as it always has.
+        self.announcement_channel_id = announcement_channel_id
+        self.regional_channel_id = regional_announcement_channel_id
+        self.home = home
+        self.local_radius_miles = local_radius_miles
         # Discovery filters the blocklist at ingest, which does nothing for an
         # event that was already approved when the act was added to the roster.
         # This is the last gate before anything reaches the community.
@@ -86,6 +116,43 @@ class PublicationService:
         # publishing silently.
         return tuple(sorted(self.catchall_role_ids))
 
+    def _is_regional(self, event: EventRecord) -> bool:
+        if self.regional_channel_id is None or self.home is None or self.local_radius_miles <= 0:
+            return False
+        if event.venue_latitude is None or event.venue_longitude is None:
+            # An address the book does not cover is far likelier to be a DIY
+            # room in town than a show four states away, and burying a local
+            # show is a worse failure than announcing a distant one.
+            return False
+        distance = haversine_miles(
+            self.home, GeoPoint(event.venue_latitude, event.venue_longitude)
+        )
+        return distance > self.local_radius_miles
+
+    async def _routing_for(
+        self, event: EventRecord, *, channel_id: int | None = None
+    ) -> AnnouncementRouting:
+        """Pick the channel an announcement goes to and the roles it pings.
+
+        Passing channel_id pins the decision to the channel a card already
+        lives in. A venue correction can move an event across the local
+        boundary weeks after publication, but the message cannot move with
+        it, and a card posted silently must not gain a role ping on edit.
+        """
+        if channel_id is not None and self.regional_channel_id is not None:
+            regional = channel_id == self.regional_channel_id
+        else:
+            regional = self._is_regional(event)
+        if regional:
+            return AnnouncementRouting(
+                channel_id if channel_id is not None else self.regional_channel_id, (), True
+            )
+        return AnnouncementRouting(
+            channel_id if channel_id is not None else self.announcement_channel_id,
+            await self._roles_for(event),
+            False,
+        )
+
     async def publish(self, event_id: str) -> EventRecord:
         async with self._locks[event_id]:
             event = await self.repository.get_event(event_id)
@@ -118,11 +185,18 @@ class PublicationService:
                 if announcement_id:
                     announcement_message_id = int(announcement_id)
                 else:
-                    role_ids = await self._roles_for(event)
+                    routing = await self._routing_for(event)
+                    if routing.is_regional:
+                        logger.info(
+                            "Announcing %r in the regional channel without role pings",
+                            event.title,
+                        )
                     announcement_message_id = await self.gateway.create_or_find_announcement(
-                        event, role_ids, scheduled_event_id
+                        event, routing.role_ids, scheduled_event_id, routing.channel_id
                     )
-                    await self.repository.record_announcement(event_id, announcement_message_id)
+                    await self.repository.record_announcement(
+                        event_id, announcement_message_id, routing.channel_id
+                    )
 
                 await self.repository.mark_published(event_id)
             except Exception as exc:
@@ -180,10 +254,18 @@ class PublicationService:
             announcement_id = publication.get("announcement_message_id")
             if not announcement_id:
                 return
-            role_ids = await self._roles_for(event)
+            stored_channel = publication.get("announcement_channel_id")
+            # Publications recorded before the local/regional split carry no
+            # channel, and every one of those cards is in the main channel.
+            # Re-routing their edits by distance would send an artwork
+            # backfill to the regional channel to edit a message that is not
+            # there.
+            pinned = int(stored_channel) if stored_channel else self.announcement_channel_id
+            routing = await self._routing_for(event, channel_id=pinned)
             await self.gateway.update_published_event(
                 event,
                 int(scheduled_id) if scheduled_id else None,
                 int(announcement_id),
-                role_ids,
+                routing.role_ids,
+                routing.channel_id,
             )

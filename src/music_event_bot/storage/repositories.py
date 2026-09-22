@@ -1172,10 +1172,20 @@ class EventRepository:
             event_id, scheduled_event_id=str(scheduled_event_id), state="scheduled_event_created"
         )
 
-    async def record_announcement(self, event_id: str, message_id: int) -> None:
-        await self._update_publication(
-            event_id, announcement_message_id=str(message_id), state="announcement_created"
-        )
+    async def record_announcement(
+        self, event_id: str, message_id: int, channel_id: int | None = None
+    ) -> None:
+        # The channel is stored because announcements are re-found by scanning
+        # one channel's history for the event marker. Once regional shows go
+        # to their own channel, a crash mid-publish would otherwise rescan the
+        # wrong one and post the event a second time.
+        values = {
+            "announcement_message_id": str(message_id),
+            "state": "announcement_created",
+        }
+        if channel_id is not None:
+            values["announcement_channel_id"] = str(channel_id)
+        await self._update_publication(event_id, **values)
 
     async def mark_published(self, event_id: str) -> None:
         now = _now().isoformat()

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from music_event_bot.domain.blocklist import Blocklist
+from music_event_bot.domain.geography import GeoPoint
 from music_event_bot.domain.models import EventRecord, EventStatus, ScoreResult
 from music_event_bot.services.publishing import PublicationService
 
@@ -19,8 +20,13 @@ _NIGHT_LOCAL = datetime(2026, 7, 17, 7, 0, tzinfo=UTC)
 class FakePublicationGateway:
     def __init__(self) -> None:
         self.scheduled_calls: list[str] = []
-        self.announcement_calls: list[tuple[str, tuple[int, ...]]] = []
+        self.announcement_calls: list[tuple[str, tuple[int, ...], int | None]] = []
         self.update_calls: list[tuple[str, int, int, tuple[int, ...]]] = []
+        # Kept beside the call tuples rather than inside them so the routing
+        # tests can assert on channels without rewriting every existing
+        # assertion about roles.
+        self.announcement_channels: list[int | None] = []
+        self.update_channels: list[int | None] = []
         self.announcement_error: Exception | None = None
 
     async def create_or_find_scheduled_event(self, event: EventRecord) -> int:
@@ -28,9 +34,14 @@ class FakePublicationGateway:
         return 7001
 
     async def create_or_find_announcement(
-        self, event: EventRecord, role_ids: tuple[int, ...], scheduled_event_id: int
+        self,
+        event: EventRecord,
+        role_ids: tuple[int, ...],
+        scheduled_event_id: int,
+        channel_id: int | None = None,
     ) -> int:
         self.announcement_calls.append((event.id, role_ids, scheduled_event_id))
+        self.announcement_channels.append(channel_id)
         if self.announcement_error is not None:
             raise self.announcement_error
         return 8001
@@ -41,10 +52,12 @@ class FakePublicationGateway:
         scheduled_event_id: int,
         announcement_message_id: int,
         role_ids: tuple[int, ...],
+        channel_id: int | None = None,
     ) -> None:
         self.update_calls.append(
             (event.id, scheduled_event_id, announcement_message_id, role_ids)
         )
+        self.update_channels.append(channel_id)
 
 
 async def _approved_event(repository, complete_event) -> EventRecord:
@@ -464,3 +477,171 @@ async def test_retract_refuses_an_event_still_in_review(repository, complete_eve
     )
     with pytest.raises(ValueError, match="not approved/published"):
         await repository.retract(stored.event.id, reviewer_id=42, reason="wrong tool")
+
+
+# Downtown Pittsburgh, matching the configured default home point.
+_HOME = GeoPoint(40.4406, -79.9959)
+_MAIN_CHANNEL = 500
+_REGIONAL_CHANNEL = 501
+# Mr Smalls in Millvale (~4 mi) and The Dance Cave in Toronto (~220 mi).
+_LOCAL_COORDS = (40.4795, -79.9767)
+_TORONTO_COORDS = (43.6650, -79.4103)
+
+
+def _split_service(repository, gateway, **kwargs) -> PublicationService:
+    return PublicationService(
+        repository,
+        gateway,
+        announcement_channel_id=_MAIN_CHANNEL,
+        regional_announcement_channel_id=_REGIONAL_CHANNEL,
+        home=_HOME,
+        local_radius_miles=75,
+        **kwargs,
+    )
+
+
+async def _approved_at(repository, complete_event, coords, suffix: str) -> EventRecord:
+    latitude, longitude = coords if coords else (None, None)
+    return await _approved_event(
+        repository,
+        replace(
+            complete_event,
+            source_event_id=f"geo-{suffix}",
+            title=f"Show {suffix}",
+            venue_latitude=latitude,
+            venue_longitude=longitude,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_distant_show_goes_to_the_regional_channel_without_role_pings(
+    repository, complete_event
+) -> None:
+    """The Toronto complaint: role mentions are a union, so a member cannot
+    hold the goth role for local shows and drop it for distant ones. The
+    split has to happen before Discord sees the message."""
+    event = await _approved_at(repository, complete_event, _TORONTO_COORDS, "toronto")
+    await repository.seed_genre_roles({"indie rock": 1})
+    gateway = FakePublicationGateway()
+
+    await _split_service(repository, gateway).publish(event.id)
+
+    assert gateway.announcement_calls == [(event.id, (), 7001)]
+    assert gateway.announcement_channels == [_REGIONAL_CHANNEL]
+
+
+@pytest.mark.asyncio
+async def test_local_show_keeps_its_role_pings_in_the_main_channel(
+    repository, complete_event
+) -> None:
+    event = await _approved_at(repository, complete_event, _LOCAL_COORDS, "millvale")
+    await repository.seed_genre_roles({"indie rock": 1})
+    gateway = FakePublicationGateway()
+
+    await _split_service(repository, gateway).publish(event.id)
+
+    assert gateway.announcement_calls == [(event.id, (1,), 7001)]
+    assert gateway.announcement_channels == [_MAIN_CHANNEL]
+
+
+@pytest.mark.asyncio
+async def test_show_without_coordinates_is_treated_as_local(
+    repository, complete_event
+) -> None:
+    """A DIY room the address book does not cover is likelier to be in town
+    than four states away, and burying a local show is the worse failure."""
+    event = await _approved_at(repository, complete_event, None, "unmapped")
+    await repository.seed_genre_roles({"indie rock": 1})
+    gateway = FakePublicationGateway()
+
+    await _split_service(repository, gateway).publish(event.id)
+
+    assert gateway.announcement_calls == [(event.id, (1,), 7001)]
+    assert gateway.announcement_channels == [_MAIN_CHANNEL]
+
+
+@pytest.mark.asyncio
+async def test_without_a_regional_channel_everything_routes_as_before(
+    repository, complete_event
+) -> None:
+    event = await _approved_at(repository, complete_event, _TORONTO_COORDS, "no-split")
+    await repository.seed_genre_roles({"indie rock": 1})
+    gateway = FakePublicationGateway()
+    service = PublicationService(
+        repository,
+        gateway,
+        announcement_channel_id=_MAIN_CHANNEL,
+        home=_HOME,
+        local_radius_miles=75,
+    )
+
+    await service.publish(event.id)
+
+    assert gateway.announcement_calls == [(event.id, (1,), 7001)]
+    assert gateway.announcement_channels == [_MAIN_CHANNEL]
+
+
+@pytest.mark.asyncio
+async def test_publication_records_the_channel_it_announced_in(
+    repository, complete_event
+) -> None:
+    """Announcements are re-found by scanning one channel's history for the
+    event marker; without the channel on the row, a crash mid-publish would
+    rescan the wrong one and post the show twice."""
+    event = await _approved_at(repository, complete_event, _TORONTO_COORDS, "recorded")
+    gateway = FakePublicationGateway()
+
+    await _split_service(repository, gateway).publish(event.id)
+
+    publication = await repository.get_publication(event.id)
+    assert publication is not None
+    assert publication["announcement_channel_id"] == str(_REGIONAL_CHANNEL)
+
+
+@pytest.mark.asyncio
+async def test_edits_stay_on_the_card_channel_and_never_add_a_ping(
+    repository, complete_event
+) -> None:
+    """A venue correction can move an event across the local boundary long
+    after publication. The message cannot move with it, and a card posted
+    silently must not gain a role ping on its next edit."""
+    event = await _approved_at(repository, complete_event, _TORONTO_COORDS, "moved")
+    await repository.seed_genre_roles({"indie rock": 1})
+    gateway = FakePublicationGateway()
+    service = _split_service(repository, gateway)
+    await service.publish(event.id)
+
+    async with repository.database.connect() as connection:
+        await connection.execute(
+            "UPDATE events SET venue_latitude = ?, venue_longitude = ? WHERE id = ?",
+            (*_LOCAL_COORDS, event.id),
+        )
+        await connection.commit()
+    await service.update_existing(event.id)
+
+    assert gateway.update_channels == [_REGIONAL_CHANNEL]
+    assert gateway.update_calls[0][3] == ()
+
+
+@pytest.mark.asyncio
+async def test_legacy_card_without_a_stored_channel_is_edited_in_the_main_channel(
+    repository, complete_event
+) -> None:
+    """Every card published before the split lives in the main channel.
+    Routing one of those edits by distance would send an artwork backfill to
+    the regional channel to edit a message that is not there."""
+    event = await _approved_at(repository, complete_event, _TORONTO_COORDS, "legacy")
+    gateway = FakePublicationGateway()
+    plain = PublicationService(repository, gateway, announcement_channel_id=_MAIN_CHANNEL)
+    await plain.publish(event.id)
+    async with repository.database.connect() as connection:
+        await connection.execute(
+            "UPDATE publications SET announcement_channel_id = NULL WHERE event_id = ?",
+            (event.id,),
+        )
+        await connection.commit()
+
+    await _split_service(repository, gateway).update_existing(event.id)
+
+    assert gateway.update_channels == [_MAIN_CHANNEL]

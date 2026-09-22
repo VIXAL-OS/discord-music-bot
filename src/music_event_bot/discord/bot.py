@@ -123,6 +123,10 @@ class MusicEventDiscordBot(commands.Bot):
             # Last gate before the community sees anything: an event approved
             # before its act joined the blocklist must not go out.
             blocklist=app.blocklist,
+            announcement_channel_id=self.settings.announcement_channel_id,
+            regional_announcement_channel_id=self.settings.regional_announcement_channel_id,
+            home=self.settings.home_point,
+            local_radius_miles=self.settings.local_radius_miles,
         )
         # Discovery writes late-arriving artwork straight to SQLite. Hand it the
         # publication service so an event that was announced before its flyer
@@ -544,6 +548,10 @@ class MusicEventDiscordBot(commands.Bot):
             if publication is None or channel_id is None:
                 await self.repository.mark_reminder_sent(event.id)
                 continue
+            # Reminders always go to the main channel, even for a show whose card
+            # lives in the regional one: muting the regional flood should cost you
+            # the browsing, never a reminder for a show you said you were going to.
+            # Only the jump link follows the card.
             channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):
                 continue
@@ -552,9 +560,10 @@ class MusicEventDiscordBot(commands.Bot):
             header = f"⏰ Tomorrow: **{event.title}**{venue}, {when}"
             announcement_id = publication.get("announcement_message_id")
             if announcement_id:
+                card_channel_id = publication.get("announcement_channel_id") or channel_id
                 header += (
                     f"\nhttps://discord.com/channels/{self.settings.discord_guild_id}"
-                    f"/{channel_id}/{announcement_id}"
+                    f"/{card_channel_id}/{announcement_id}"
                 )
             mentions = [f"<@{user_id}>" for user_id in user_ids]
             await channel.send(

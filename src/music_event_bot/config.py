@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     discord_guild_id: int | None = None
     review_channel_id: int | None = None
     announcement_channel_id: int | None = None
+    # Shows farther than local_radius_miles from home are announced here
+    # instead, without role pings, so anyone who only wants shows they can
+    # drive to can mute one channel and keep every genre role they have.
+    # Unset means one channel for everything (the original behaviour).
+    regional_announcement_channel_id: int | None = None
+    # The local/regional boundary. Events whose venue has no coordinates
+    # count as local: a DIY room the address book does not cover is far more
+    # likely to be in town than four states away, and hiding it is worse
+    # than announcing it.
+    local_radius_miles: int = 75
     admin_user_ids: str = ""
     reviewer_role_ids: str = ""
     genre_role_map: str = "{}"
