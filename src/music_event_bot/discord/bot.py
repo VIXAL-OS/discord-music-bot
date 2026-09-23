@@ -8,6 +8,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import discord
 from dateutil.parser import parse as parse_datetime
@@ -20,9 +21,18 @@ from music_event_bot.discord.publishing import DiscordPublicationGateway
 from music_event_bot.discord.review import EditEventModal, EventReviewView, review_embed
 from music_event_bot.discord.rsvp import RsvpView
 from music_event_bot.discovery.manual import manual_event
+from music_event_bot.domain.metros import (
+    DEFAULT_TRAVEL_BAND,
+    METROS,
+    TRAVEL_BANDS,
+    metro,
+    nearest_metro,
+    travel_band,
+)
 from music_event_bot.domain.models import EventRecord, EventStatus
+from music_event_bot.domain.normalization import normalize_text
 from music_event_bot.domain.scoring import score_event
-from music_event_bot.services.profiles import GuildMember
+from music_event_bot.services.profiles import GuildMember, bucket_genre_roles
 from music_event_bot.services.publishing import PublicationService
 from music_event_bot.services.request_parser import RequestEventParser
 from music_event_bot.services.scheduler import BotScheduler
@@ -686,6 +696,205 @@ class MusicEventDiscordBot(commands.Bot):
             raise TypeError("Review channel must be a text channel")
         return channel
 
+    async def ensure_profile(
+        self, member: discord.Member, *, create_if_empty: bool = False
+    ) -> dict[str, Any] | None:
+        """The member's profile, seeded from their roles if they have none.
+
+        Shared by /me and the role listener so a member reaches per-user
+        delivery the same way whichever they touch first: the roles they
+        already hold become the profile, rather than a blank slate that
+        would quietly stop pinging them.
+        """
+        existing = await self.repository.get_user_profile(member.id)
+        if existing is not None:
+            return existing
+        role_genres = bucket_genre_roles(
+            await self.repository.list_genre_roles(),
+            {normalize_text(genre) for genre in self.settings.role_map},
+        )
+        granted = sorted(
+            {genre for role in member.roles for genre in role_genres.get(role.id, ())}
+        )
+        if not granted and not create_if_empty:
+            return None
+        await self.repository.upsert_user_profile(
+            member.id,
+            display_name=member.display_name,
+            metro=nearest_metro(self.settings.home_point).key,
+            travel_band=DEFAULT_TRAVEL_BAND,
+            daily_ping_cap=self.settings.default_daily_ping_cap,
+            source="role-seed",
+        )
+        if granted:
+            await self.repository.add_user_taste(
+                member.id, "genre", tuple(granted), source="role-seed"
+            )
+        logger.info("Seeded a profile for %s from %d role genre(s)", member.id, len(granted))
+        return await self.repository.get_user_profile(member.id)
+
+    async def profile_summary(self, user_id: int) -> str:
+        profile = await self.repository.get_user_profile(user_id)
+        if profile is None:
+            return "You have no alert profile yet."
+        band = travel_band(str(profile["travel_band"]))
+        taste = await self.repository.get_user_taste(user_id, "genre")
+        held = [value for value, weight in taste.items() if weight > 0]
+        dropped = [value for value, weight in taste.items() if weight <= 0]
+        cap = int(profile["daily_ping_cap"])
+        home_label = metro(str(profile["metro"])).label
+        cap_label = str(cap) if cap > 0 else "no limit"
+        overflow = " - anything over waits for the daily catch-up post" if cap > 0 else ""
+        held_label = ", ".join(held) if held else "none yet"
+        lines = [
+            "**Your show alerts**",
+            f"- Home: **{home_label}**",
+            f"- Travel: **{band.label}** (within {band.radius_miles} miles)",
+            f"- Daily cap: **{cap_label}**{overflow}",
+            f"- Delivery: **{profile['delivery']}**",
+            f"- Genres: {held_label}",
+        ]
+        if dropped:
+            lines.append("- Dropped: " + ", ".join(dropped))
+        return "\n".join(lines)
+
+    def _register_profile_commands(self, guild: discord.Object) -> None:
+        """/me -- a member's own alert settings.
+
+        Deliberately no permission gate, like the RSVP buttons: these are
+        every member's own settings, not a reviewer action.
+        """
+        group = app_commands.Group(name="me", description="Tune which shows ping you")
+        buckets = sorted({normalize_text(genre) for genre in self.settings.role_map})
+
+        async def _member(interaction: discord.Interaction) -> discord.Member | None:
+            if not isinstance(interaction.user, discord.Member):
+                await interaction.response.send_message(
+                    "Use this in the server, not in a DM.", ephemeral=True
+                )
+                return None
+            return interaction.user
+
+        async def _respond(interaction: discord.Interaction, note: str) -> None:
+            summary = await self.profile_summary(interaction.user.id)
+            await interaction.response.send_message(
+                note + "\n\n" + summary,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        @group.command(name="show", description="Show your alert settings")
+        async def show(interaction: discord.Interaction) -> None:
+            member = await _member(interaction)
+            if member is None:
+                return
+            await self.ensure_profile(member, create_if_empty=True)
+            await _respond(interaction, "Here is what the bot has for you.")
+
+        @group.command(name="home", description="Set the metro you go to shows in")
+        @app_commands.choices(
+            place=[
+                app_commands.Choice(name=candidate.label, value=candidate.key)
+                for candidate in METROS
+            ]
+        )
+        async def home(
+            interaction: discord.Interaction, place: app_commands.Choice[str]
+        ) -> None:
+            member = await _member(interaction)
+            if member is None:
+                return
+            await self.ensure_profile(member, create_if_empty=True)
+            await self.repository.update_user_profile(member.id, metro=place.value)
+            await _respond(interaction, f"Home set to **{place.name}**.")
+
+        @group.command(name="travel", description="How far you will go for a show")
+        @app_commands.choices(
+            distance=[
+                app_commands.Choice(
+                    name=f"{band.label} (within {band.radius_miles} miles)", value=band.key
+                )
+                for band in TRAVEL_BANDS
+            ]
+        )
+        async def travel(
+            interaction: discord.Interaction, distance: app_commands.Choice[str]
+        ) -> None:
+            member = await _member(interaction)
+            if member is None:
+                return
+            await self.ensure_profile(member, create_if_empty=True)
+            await self.repository.update_user_profile(member.id, travel_band=distance.value)
+            await _respond(interaction, f"Travel range set to **{distance.name}**.")
+
+        @group.command(name="cap", description="Most pings you want in one day")
+        @app_commands.describe(per_day="0 means no limit. Anything over waits for the catch-up.")
+        async def cap(
+            interaction: discord.Interaction, per_day: app_commands.Range[int, 0, 50]
+        ) -> None:
+            member = await _member(interaction)
+            if member is None:
+                return
+            await self.ensure_profile(member, create_if_empty=True)
+            await self.repository.update_user_profile(member.id, daily_ping_cap=int(per_day))
+            await _respond(interaction, f"Daily cap set to **{per_day or 'no limit'}**.")
+
+        @group.command(name="delivery", description="How you hear about shows")
+        @app_commands.choices(
+            mode=[
+                app_commands.Choice(name="Mention me on matching shows", value="mention"),
+                app_commands.Choice(name="Mention me on everything", value="firehose"),
+                app_commands.Choice(name="Never mention me", value="off"),
+            ]
+        )
+        async def delivery(
+            interaction: discord.Interaction, mode: app_commands.Choice[str]
+        ) -> None:
+            member = await _member(interaction)
+            if member is None:
+                return
+            await self.ensure_profile(member, create_if_empty=True)
+            await self.repository.update_user_profile(member.id, delivery=mode.value)
+            await _respond(interaction, f"Delivery set to **{mode.name}**.")
+
+        @group.command(name="genre", description="Add or drop a genre")
+        @app_commands.choices(
+            action=[
+                app_commands.Choice(name="Add", value="add"),
+                app_commands.Choice(name="Drop", value="drop"),
+            ]
+        )
+        @app_commands.describe(name="One of the genre buckets this server uses")
+        async def genre_command(
+            interaction: discord.Interaction, action: app_commands.Choice[str], name: str
+        ) -> None:
+            member = await _member(interaction)
+            if member is None:
+                return
+            chosen = normalize_text(name)
+            if chosen not in buckets:
+                await interaction.response.send_message(
+                    f"`{name}` is not one of: " + ", ".join(buckets), ephemeral=True
+                )
+                return
+            await self.ensure_profile(member, create_if_empty=True)
+            # Dropping writes -1 rather than deleting the row: a negative
+            # weight is what stops a later seed run handing the genre back.
+            await self.repository.set_user_taste(
+                member.id, "genre", chosen, 1 if action.value == "add" else -1
+            )
+            verb = "Added" if action.value == "add" else "Dropped"
+            await _respond(interaction, f"{verb} **{chosen}**.")
+
+        @genre_command.autocomplete("name")
+        async def genre_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            matching = [item for item in buckets if current.casefold() in item]
+            return [app_commands.Choice(name=item, value=item) for item in matching[:25]]
+
+        self.tree.add_command(group, guild=guild)
+
     def _register_commands(self) -> None:
         group = app_commands.Group(name="event", description="Manage music events")
         guild_id = self.settings.discord_guild_id
@@ -864,3 +1073,4 @@ class MusicEventDiscordBot(commands.Bot):
             )
 
         self.tree.add_command(group, guild=guild)
+        self._register_profile_commands(guild)

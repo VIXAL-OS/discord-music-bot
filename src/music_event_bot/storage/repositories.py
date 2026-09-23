@@ -1463,6 +1463,68 @@ class EventRepository:
             cursor = await connection.execute("SELECT * FROM user_profiles")
             return {int(row["user_id"]): dict(row) for row in await cursor.fetchall()}
 
+    async def get_user_profile(self, user_id: int) -> dict[str, Any] | None:
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT * FROM user_profiles WHERE user_id = ?", (str(user_id),)
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_user_profile(self, user_id: int, **fields: Any) -> None:
+        """Apply a member's own change to their profile.
+
+        Stamps customized_at, which is what stops a later seed run handing
+        back the settings they just changed.
+        """
+        allowed = {"metro", "travel_band", "daily_ping_cap", "delivery", "display_name"}
+        invalid = set(fields) - allowed
+        if invalid:
+            raise ValueError(f"Unsupported profile fields: {', '.join(sorted(invalid))}")
+        now = _now().isoformat()
+        values = {**fields, "customized_at": now, "updated_at": now}
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                f"UPDATE user_profiles SET {assignments} WHERE user_id = ?",
+                (*values.values(), str(user_id)),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"No profile for user {user_id}")
+            await connection.commit()
+
+    async def set_user_taste(self, user_id: int, kind: str, value: str, weight: int) -> None:
+        """Set one taste row outright, weight included.
+
+        Unlike add_user_taste this overwrites, because it is how a member
+        drops a genre: weight goes negative, which reads as "stop showing me
+        this" and survives a reseed.
+        """
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            await connection.execute(
+                """
+                INSERT INTO user_taste(user_id, kind, value, weight, source, updated_at)
+                VALUES (?, ?, ?, ?, 'self', ?)
+                ON CONFLICT(user_id, kind, value) DO UPDATE SET
+                    weight = excluded.weight, source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (str(user_id), kind, value, weight, now),
+            )
+            await connection.commit()
+
+    async def get_user_taste(self, user_id: int, kind: str) -> dict[str, int]:
+        """One member's values for a kind, weights included so the profile
+        card can show what they have dropped as well as what they hold."""
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT value, weight FROM user_taste WHERE user_id = ? AND kind = ? "
+                "ORDER BY value",
+                (str(user_id), kind),
+            )
+            return {str(row["value"]): int(row["weight"]) for row in await cursor.fetchall()}
+
     async def list_user_taste(self, kind: str) -> dict[int, set[str]]:
         """Every member's values for one taste kind, positive weights only.
 

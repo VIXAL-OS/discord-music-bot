@@ -428,3 +428,106 @@ async def test_catchup_does_nothing_while_delivery_is_not_on(monkeypatch) -> Non
     bot = _catchup_bot(repo, personal_delivery="shadow")
     assert await bot.post_catchup() == 0
     assert repo.expired_at is None
+
+
+def _profile_bot(repository: Any, **overrides: Any) -> MusicEventDiscordBot:
+    settings = Settings(
+        _env_file=None,
+        discord_token="test-token",
+        discord_guild_id=1,
+        review_channel_id=2,
+        announcement_channel_id=3,
+        admin_user_ids="4",
+        genre_role_map='{"goth": "10", "punk": "11"}',
+        **overrides,
+    )
+    app = cast(
+        Application,
+        SimpleNamespace(
+            settings=settings,
+            repository=repository,
+            discovery=SimpleNamespace(run=None),
+            profile=SimpleNamespace(),
+            blocklist=Blocklist(),
+        ),
+    )
+    return MusicEventDiscordBot(app)
+
+
+def _fake_member(user_id: int, name: str, *role_ids: int) -> Any:
+    return SimpleNamespace(
+        id=user_id,
+        display_name=name,
+        bot=False,
+        roles=[SimpleNamespace(id=role_id) for role_id in role_ids],
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_profile_seeds_from_the_roles_a_member_holds(repository) -> None:
+    await repository.seed_genre_roles({"goth": 10, "punk": 11, "darkwave": 10})
+    bot = _profile_bot(repository)
+
+    profile = await bot.ensure_profile(_fake_member(7, "Avery", 10))
+
+    assert profile is not None
+    assert profile["metro"] == "pittsburgh"
+    assert profile["travel_band"] == "road-trip"
+    assert profile["customized_at"] is None
+    # The derived alias is not seeded, only the configured bucket.
+    assert await repository.get_user_taste(7, "genre") == {"goth": 1}
+
+
+@pytest.mark.asyncio
+async def test_ensure_profile_is_idempotent(repository) -> None:
+    await repository.seed_genre_roles({"goth": 10})
+    bot = _profile_bot(repository)
+    member = _fake_member(7, "Avery", 10)
+    first = await bot.ensure_profile(member)
+    await repository.update_user_profile(7, daily_ping_cap=2)
+
+    second = await bot.ensure_profile(member)
+
+    assert first is not None and second is not None
+    assert second["daily_ping_cap"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_member_with_no_genre_roles_gets_a_profile_only_when_they_ask(
+    repository,
+) -> None:
+    await repository.seed_genre_roles({"goth": 10})
+    bot = _profile_bot(repository)
+    lurker = _fake_member(8, "Lurker", 99)
+
+    assert await bot.ensure_profile(lurker) is None
+    assert await bot.ensure_profile(lurker, create_if_empty=True) is not None
+    assert await repository.get_user_taste(8, "genre") == {}
+
+
+@pytest.mark.asyncio
+async def test_profile_summary_names_held_and_dropped_genres(repository) -> None:
+    await repository.seed_genre_roles({"goth": 10, "punk": 11})
+    bot = _profile_bot(repository)
+    await bot.ensure_profile(_fake_member(7, "Avery", 10, 11))
+    await repository.set_user_taste(7, "genre", "punk", -1)
+    await repository.update_user_profile(7, metro="cleveland", travel_band="in-town")
+
+    summary = await bot.profile_summary(7)
+
+    assert "Cleveland" in summary
+    assert "In town" in summary and "40 miles" in summary
+    assert "Genres: goth" in summary
+    assert "Dropped: punk" in summary
+
+
+@pytest.mark.asyncio
+async def test_profile_summary_says_no_limit_for_an_uncapped_member(repository) -> None:
+    await repository.seed_genre_roles({"goth": 10})
+    bot = _profile_bot(repository)
+    await bot.ensure_profile(_fake_member(7, "Avery", 10))
+    await repository.update_user_profile(7, daily_ping_cap=0)
+
+    summary = await bot.profile_summary(7)
+
+    assert "no limit" in summary and "catch-up" not in summary

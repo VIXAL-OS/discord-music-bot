@@ -310,11 +310,15 @@ music-event-bot events --venue "Thunderbird Music Hall" --on 2026-09-13
 music-event-bot scrape-once
 music-event-bot dedupe
 music-event-bot review-sync
+music-event-bot seed-profiles
+music-event-bot delivery-report --days 30
 music-event-bot bot
 music-event-bot spotify-auth
 ```
 
-`health` and `migrate` do not require Discord credentials. `scrape-once` works with whichever discovery sources are configured.
+`seed-profiles` reads who holds which genre role and gives each of them a profile granting the same coverage that role already gave. It is a dry run unless passed `--apply`, and it needs the Server Members intent (enable it in the Developer Portal, then set `MUSICBOT_MEMBERS_INTENT=true`). `delivery-report` replays recent announcements through per-user delivery and reports, per member, how many pings taste alone would give them, how many survive their metro, and how many survive their daily cap.
+
+`health`, `migrate` and `delivery-report` do not require Discord credentials. `scrape-once` works with whichever discovery sources are configured.
 
 `events --venue ... --on ...` answers "does the bot already carry this show?" without going through titles — which is what the sources disagree about. The venue is resolved through `config/venue-aliases.json`, and `--on` is the local calendar night at the venue's own timezone, not the UTC date. The scheduled tasks that write onto the shared Google Calendar call this before adding an entry.
 
@@ -338,6 +342,20 @@ Merging is narrow on purpose. A multi-room venue runs different bills at the sam
 - `/event set-role` — map a genre to a Discord role
 
 Review cards also have persistent buttons for the common actions.
+
+### Per-member alert settings
+
+Every member has their own alert settings, and `/me` is how they change them. No permission gate — these are each member's own settings, not a reviewer action.
+
+- `/me show` — current settings, creating a profile from your roles if you have none
+- `/me home` — the metro you go to shows in, picked from a list
+- `/me travel` — in town, day trip or road trip
+- `/me cap` — most pings you want in one day; anything over waits for the catch-up post
+- `/me delivery` — mention me on matches, on everything, or never
+- `/me genre` — add or drop one of the server's genre buckets
+
+Dropping a genre writes a negative weight rather than deleting the row, so re-joining the matching Discord role does not undo it. Changing anything through `/me` stamps the profile as customized, which is what stops `seed-profiles` handing back a setting you just changed.
+
 
 ## Review and publication lifecycle
 
