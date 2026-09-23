@@ -611,3 +611,48 @@ async def test_a_customized_profile_is_skipped_by_a_later_seed_run(repository) -
 
     assert actions[0].action == SKIPPED_CUSTOMIZED
     assert actions[0].writes is False
+
+
+def test_help_lists_every_me_subcommand_for_anyone() -> None:
+    text = _profile_bot(None)._help_text(reviewer=False)
+    for name in ("show", "home", "travel", "cap", "delivery", "genre", "artist"):
+        assert f"`/me {name}`" in text
+
+
+def test_help_hides_reviewer_commands_from_members() -> None:
+    """Listed-and-refused just invites a member to try something they cannot
+    act on."""
+    member_text = _profile_bot(None)._help_text(reviewer=False)
+    reviewer_text = _profile_bot(None)._help_text(reviewer=True)
+    assert "/event" not in member_text
+    for name in ("submit", "approve", "reject", "set-role"):
+        assert f"`/event {name}`" in reviewer_text
+
+
+def test_help_omits_the_channel_guide_until_the_split_is_configured() -> None:
+    plain = _profile_bot(None)._help_text(reviewer=False)
+    assert "Channels" not in plain
+
+    split = _profile_bot(
+        None, regional_announcement_channel_id=9, local_radius_miles=60
+    )._help_text(reviewer=False)
+    assert "<#3>" in split and "<#9>" in split
+    assert "60 miles" in split
+    assert "Mute it" in split
+
+
+def test_help_tells_reviewers_the_delivery_mode_is_not_live_yet() -> None:
+    off = _profile_bot(None)._help_text(reviewer=True)
+    assert "Per-user delivery is **off**" in off
+    assert "not" in off.split("Per-user delivery")[1]
+
+    live = _profile_bot(None, personal_delivery="on")._help_text(reviewer=True)
+    assert "Per-user delivery is **on**" in live
+    assert "profiles are recorded but not used yet" not in live
+
+
+def test_help_explains_that_following_does_not_widen_matching() -> None:
+    """The one thing members will otherwise get wrong about the feature."""
+    text = _profile_bot(None)._help_text(reviewer=False)
+    assert "does **not** widen" in text
+    assert "catch-up" in text

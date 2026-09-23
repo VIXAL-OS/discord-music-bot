@@ -174,7 +174,26 @@ Install the bot in the target server with permission to:
 
 The configured review channel should be private at the Discord channel-permission level. The bot also checks reviewer authorization inside every command, button, and modal callback.
 
-The bot does not need the privileged Message Content Intent because the MVP uses slash commands and interactions instead of `!` commands.
+Two privileged intents must be enabled in the Developer Portal, and each is
+also opt-in in configuration:
+
+- **Message Content** — lets an @mention request read the surrounding conversation
+  ("event card for this pls?"). Always requested.
+- **Server Members** — lets the bot read who holds which genre role, which
+  `seed-profiles` needs and which the role listener needs to give a new member
+  a profile. Requested only when `MUSICBOT_MEMBERS_INTENT=true`, because asking
+  for an intent the portal has not granted makes the gateway refuse the
+  connection outright. Enable it in the portal *first*.
+
+If you configure `MUSICBOT_REGIONAL_ANNOUNCEMENT_CHANNEL_ID`, the bot needs the
+same permissions in that channel as in the main one — including **Read Message
+History**. Announcements are re-found after a restart by scanning one channel's
+history for the event marker, so without it a crash mid-publish would announce
+the same show twice.
+
+There are no region roles. Role mentions are a union, never an intersection, so
+a `@Toronto` role could not express "goth shows in town but not four states
+away" — the channel split and the per-member travel band do that instead.
 
 ### Ticketmaster
 
@@ -341,6 +360,7 @@ Merging is narrow on purpose. A multi-room venue runs different bills at the sam
 - `/event reject` — reject with an optional reason
 - `/event retry` — retry a failed publication
 - `/event set-role` — map a genre to a Discord role
+- `/help` — what the bot can do; reviewer commands are shown only to reviewers
 
 Review cards also have persistent buttons for the common actions.
 

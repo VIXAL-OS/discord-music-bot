@@ -16,7 +16,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from music_event_bot.app import Application
-from music_event_bot.discord.permissions import require_reviewer
+from music_event_bot.discord.permissions import is_reviewer, require_reviewer
 from music_event_bot.discord.publishing import DiscordPublicationGateway
 from music_event_bot.discord.review import EditEventModal, EventReviewView, review_embed
 from music_event_bot.discord.rsvp import RsvpView
@@ -798,6 +798,73 @@ class MusicEventDiscordBot(commands.Bot):
             )
         return "\n".join(lines)
 
+    def _help_text(self, reviewer: bool) -> str:
+        """The command reference, tailored to who is asking.
+
+        Reviewer commands are hidden from everyone else rather than listed
+        and refused: /event is not something a member can act on, so showing
+        it only invites them to try.
+        """
+        lines = [
+            "**Your show alerts** — anyone can use these, and they only affect you.",
+            "- `/me show` — what the bot currently has for you",
+            "- `/me home` — the metro you go to shows in",
+            "- `/me travel` — how far you will go: in town, day trip, or road trip",
+            "- `/me cap` — most pings you want in one day",
+            "- `/me delivery` — mention me on matches, on everything, or never",
+            "- `/me genre` — add or drop one of the genre buckets",
+            "- `/me artist` — follow or unfollow an act",
+            "",
+            "Following an act does **not** widen what you match — the genre buckets still "
+            "decide that. It reserves the tail of your daily cap for shows featuring acts "
+            "you follow, so a busy day gives you the best few rather than the first few. "
+            "Anything over your cap waits for the daily catch-up post instead of being lost.",
+        ]
+        if self.settings.regional_announcement_channel_id is not None:
+            lines += [
+                "",
+                "**Channels**",
+                f"- <#{self.settings.announcement_channel_id}> — shows within "
+                f"{self.settings.local_radius_miles} miles",
+                f"- <#{self.settings.regional_announcement_channel_id}> — everything "
+                "further out, posted with no ping. Mute it if you only want shows nearby.",
+            ]
+        if reviewer:
+            lines += [
+                "",
+                "**Reviewing** — reviewers only.",
+                "- `/event submit` — submit an event or a URL for review",
+                "- `/event show` — inspect a stored event",
+                "- `/event edit` — open the edit form",
+                "- `/event approve` — approve and publish",
+                "- `/event reject` — reject with an optional reason",
+                "- `/event retry` — retry a failed publication",
+                "- `/event set-role` — map a genre to a Discord role",
+                "",
+                f"Per-user delivery is **{self.settings.personal_delivery}**."
+                + (
+                    " Announcements still ping genre roles; profiles are recorded but not"
+                    " used yet."
+                    if self.settings.personal_delivery == "off"
+                    else ""
+                ),
+            ]
+        return "\n".join(lines)
+
+    def _register_help_command(self, guild: discord.Object) -> None:
+        @self.tree.command(
+            name="help", description="What this bot can do, and how to tune your alerts"
+        )
+        @app_commands.guild_only()
+        async def help_command(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(
+                self._help_text(is_reviewer(interaction, self.settings)),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        self.tree.add_command(help_command, guild=guild, override=True)
+
     def _register_profile_commands(self, guild: discord.Object) -> None:
         """/me -- a member's own alert settings.
 
@@ -1144,3 +1211,4 @@ class MusicEventDiscordBot(commands.Bot):
 
         self.tree.add_command(group, guild=guild)
         self._register_profile_commands(guild)
+        self._register_help_command(guild)
