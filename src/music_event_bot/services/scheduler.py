@@ -23,6 +23,7 @@ class BotScheduler:
         expire_events: Callable[[], Awaitable[object]],
         drain_publications: Callable[[], Awaitable[object]] | None = None,
         remind_rsvps: Callable[[], Awaitable[object]] | None = None,
+        post_catchup: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self.scheduler.add_job(
             discover,
@@ -69,6 +70,19 @@ class BotScheduler:
                 "interval",
                 hours=1,
                 id="rsvp-reminders",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+        if post_catchup is not None:
+            # Once a day, early evening: late enough that the day's queue is
+            # full, early enough to still be useful for tomorrow's shows.
+            self.scheduler.add_job(
+                post_catchup,
+                "cron",
+                hour=self.settings.catchup_hour,
+                minute=11,
+                id="catchup-post",
                 max_instances=1,
                 coalesce=True,
                 replace_existing=True,

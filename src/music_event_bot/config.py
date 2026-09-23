@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     # Default daily ping budget for a seeded profile. Anything past it
     # queues for the next day's catch-up post rather than being dropped.
     default_daily_ping_cap: int = 5
+    # One public catch-up post a day drains what overflowed the caps. Kept
+    # to a single message: a member who overflowed by six shows should pay
+    # one notification for them, not six.
+    catchup_hour: int = 18
+    catchup_max_events: int = 15
     admin_user_ids: str = ""
     reviewer_role_ids: str = ""
     genre_role_map: str = "{}"

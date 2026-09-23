@@ -199,6 +199,28 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX idx_user_taste_lookup ON user_taste(kind, value);
         """,
     ),
+    (
+        10,
+        """
+        CREATE TABLE user_notifications (
+            event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            -- pinged: mentioned on the announcement itself.
+            -- queued: matched but over the member's cap for that day; waiting
+            --   for the catch-up post, NOT dropped.
+            -- delivered: carried by a catch-up post.
+            -- expired: the show started before the catch-up reached it.
+            state TEXT NOT NULL
+                CHECK (state IN ('pinged', 'queued', 'delivered', 'expired')),
+            matched_at TEXT NOT NULL,
+            delivered_at TEXT,
+            PRIMARY KEY(event_id, user_id)
+        );
+
+        CREATE INDEX idx_user_notifications_budget
+            ON user_notifications(user_id, state, matched_at);
+        """,
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

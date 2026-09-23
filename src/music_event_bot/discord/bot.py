@@ -137,6 +137,7 @@ class MusicEventDiscordBot(commands.Bot):
             local_radius_miles=self.settings.local_radius_miles,
             personal_delivery=self.settings.personal_delivery,
             bucket_roles=self.settings.bucket_role_map,
+            timezone=self.settings.timezone,
         )
         # Discovery writes late-arriving artwork straight to SQLite. Hand it the
         # publication service so an event that was announced before its flyer
@@ -183,6 +184,7 @@ class MusicEventDiscordBot(commands.Bot):
             self.repository.expire_past_events,
             self.drain_publication_queue,
             self.remind_rsvps,
+            self.post_catchup,
         )
         self.scheduler.start()
         self._initial_cycle_task = asyncio.create_task(self._initial_cycle())
@@ -609,6 +611,69 @@ class MusicEventDiscordBot(commands.Bot):
         if sent:
             logger.info("Sent %d event-tomorrow RSVP reminders", sent)
         return sent
+
+    async def post_catchup(self) -> int:
+        """One public post a day for everything that overflowed a daily cap.
+
+        Deliberately one message: a member who overflowed by six shows should
+        pay one notification for them, not six. It stays in the channel
+        rather than becoming a DM so the whole model stays public -- the
+        mentions here are the same mentions the announcements carry.
+        """
+        if self.settings.personal_delivery != "on":
+            return 0
+        expired = await self.repository.expire_stale_queued(datetime.now(UTC))
+        if expired:
+            logger.info("Dropped %d queued item(s) whose show had already started", expired)
+        queued = await self.repository.list_queued_notifications()
+        if not queued:
+            return 0
+        channel_id = self.settings.announcement_channel_id
+        if channel_id is None:
+            return 0
+        channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return 0
+
+        lines: list[str] = []
+        mentioned: set[int] = set()
+        delivered: list[str] = []
+        for event, user_ids in queued[: self.settings.catchup_max_events]:
+            publication = await self.repository.get_publication(event.id)
+            link = ""
+            if publication and publication.get("announcement_message_id"):
+                card_channel = publication.get("announcement_channel_id") or channel_id
+                link = (
+                    f"https://discord.com/channels/{self.settings.discord_guild_id}"
+                    f"/{card_channel}/{publication['announcement_message_id']}"
+                )
+            when = f" <t:{int(event.starts_at.timestamp())}:D>" if event.starts_at else ""
+            names = " ".join(f"<@{user_id}>" for user_id in user_ids)
+            title = f"[{event.title}]({link})" if link else f"**{event.title}**"
+            lines.append(f"- {title}{when} — {names}")
+            mentioned.update(user_ids)
+            delivered.append(event.id)
+        overflow = len(queued) - len(delivered)
+        header = (
+            f"**Catch-up — {len(delivered)} show(s) you matched but did not get pinged for**"
+        )
+        body = "\n".join(lines)
+        if overflow:
+            body += f"\n- …and {overflow} more waiting in the channel."
+        await channel.send(
+            f"{header}\n{body}"[:2000],
+            allowed_mentions=discord.AllowedMentions(
+                everyone=False,
+                roles=False,
+                users=[discord.Object(id=user_id) for user_id in mentioned],
+                replied_user=False,
+            ),
+        )
+        await self.repository.mark_notifications_delivered(tuple(delivered))
+        logger.info(
+            "Catch-up post covered %d event(s) for %d member(s)", len(delivered), len(mentioned)
+        )
+        return len(delivered)
 
     async def _review_channel(self) -> discord.TextChannel:
         channel_id = self.settings.review_channel_id

@@ -27,6 +27,8 @@ class FakePublicationGateway:
         # assertion about roles.
         self.announcement_channels: list[int | None] = []
         self.update_channels: list[int | None] = []
+        self.announcement_users: list[tuple[int, ...]] = []
+        self.update_users: list[tuple[int, ...]] = []
         self.announcement_error: Exception | None = None
 
     async def create_or_find_scheduled_event(self, event: EventRecord) -> int:
@@ -39,9 +41,11 @@ class FakePublicationGateway:
         role_ids: tuple[int, ...],
         scheduled_event_id: int,
         channel_id: int | None = None,
+        user_ids: tuple[int, ...] = (),
     ) -> int:
         self.announcement_calls.append((event.id, role_ids, scheduled_event_id))
         self.announcement_channels.append(channel_id)
+        self.announcement_users.append(user_ids)
         if self.announcement_error is not None:
             raise self.announcement_error
         return 8001
@@ -53,11 +57,13 @@ class FakePublicationGateway:
         announcement_message_id: int,
         role_ids: tuple[int, ...],
         channel_id: int | None = None,
+        user_ids: tuple[int, ...] = (),
     ) -> None:
         self.update_calls.append(
             (event.id, scheduled_event_id, announcement_message_id, role_ids)
         )
         self.update_channels.append(channel_id)
+        self.update_users.append(user_ids)
 
 
 async def _approved_event(repository, complete_event) -> EventRecord:
@@ -678,6 +684,7 @@ async def test_shadow_mode_changes_nothing_that_goes_out(
 
     assert gateway.announcement_calls == [(event.id, (1,), 7001)]
     assert "Shadow delivery" in caplog.text and "Avery" in caplog.text
+    assert gateway.announcement_users == [()]
 
 
 @pytest.mark.asyncio
@@ -707,7 +714,7 @@ async def test_shadow_reports_a_member_the_metro_filter_would_drop(
     with caplog.at_level("INFO"):
         await service.publish(event.id)
 
-    assert "0 member(s) in range, 1 filtered by metro" in caplog.text
+    assert "would mention 0 (nobody), queue 0, 1 out of range" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -717,3 +724,162 @@ async def test_delivery_off_does_no_profile_work(repository, complete_event, cap
     with caplog.at_level("INFO"):
         await PublicationService(repository, gateway).publish(event.id)
     assert "Shadow delivery" not in caplog.text
+
+
+async def _profiled(repository, user_id: int, name: str, *, cap: int = 5, band: str = "road-trip"):
+    await repository.upsert_user_profile(
+        user_id,
+        display_name=name,
+        metro="pittsburgh",
+        travel_band=band,
+        daily_ping_cap=cap,
+        source="role-seed",
+    )
+    await repository.add_user_taste(user_id, "genre", ("indie rock",), source="role-seed")
+
+
+def _live_service(repository, gateway, **kwargs) -> PublicationService:
+    return PublicationService(
+        repository,
+        gateway,
+        announcement_channel_id=_MAIN_CHANNEL,
+        personal_delivery="on",
+        bucket_roles={"indie rock": 1},
+        timezone=_EASTERN,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_replaces_role_pings_with_the_members_who_matched(
+    repository, complete_event
+) -> None:
+    event = await _approved_at(repository, complete_event, _LOCAL_COORDS, "live")
+    await repository.seed_genre_roles({"indie rock": 1})
+    await _profiled(repository, 7, "Avery")
+    gateway = FakePublicationGateway()
+
+    await _live_service(repository, gateway).publish(event.id)
+
+    assert gateway.announcement_calls == [(event.id, (), 7001)]
+    assert gateway.announcement_users == [(7,)]
+    assert await repository.get_pinged_users(event.id) == (7,)
+
+
+@pytest.mark.asyncio
+async def test_an_event_matching_nobody_posts_silently(repository, complete_event) -> None:
+    """Decided over falling back to the catch-all role: the channel stays a
+    complete listing without pinging a community that did not ask for it."""
+    event = await _approved_at(repository, complete_event, _LOCAL_COORDS, "unmatched")
+    await repository.seed_genre_roles({"indie rock": 1, "other music": 99})
+    await repository.upsert_user_profile(
+        7, display_name="Avery", metro="pittsburgh", travel_band="road-trip",
+        daily_ping_cap=5, source="role-seed",
+    )
+    await repository.add_user_taste(7, "genre", ("goth",), source="role-seed")
+    gateway = FakePublicationGateway()
+
+    await _live_service(
+        repository, gateway, catchall_role_ids=frozenset({99})
+    ).publish(event.id)
+
+    assert gateway.announcement_calls == [(event.id, (), 7001)]
+    assert gateway.announcement_users == [()]
+
+
+@pytest.mark.asyncio
+async def test_with_no_profiles_seeded_role_pings_stay(
+    repository, complete_event, caplog
+) -> None:
+    """The whole server going quiet on a config typo is the one failure this
+    must not have."""
+    event = await _approved_at(repository, complete_event, _LOCAL_COORDS, "unseeded")
+    await repository.seed_genre_roles({"indie rock": 1})
+    gateway = FakePublicationGateway()
+
+    with caplog.at_level("WARNING"):
+        await _live_service(repository, gateway).publish(event.id)
+
+    assert gateway.announcement_calls == [(event.id, (1,), 7001)]
+    assert "no profiles are seeded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_overflow_past_the_daily_cap_is_queued_not_dropped(
+    repository, complete_event
+) -> None:
+    await repository.seed_genre_roles({"indie rock": 1})
+    await _profiled(repository, 7, "Avery", cap=1)
+    gateway = FakePublicationGateway()
+    service = _live_service(repository, gateway)
+
+    first = await _approved_at(repository, complete_event, _LOCAL_COORDS, "cap-1")
+    second = await _approved_at(repository, complete_event, _LOCAL_COORDS, "cap-2")
+    await service.publish(first.id)
+    await service.publish(second.id)
+
+    assert gateway.announcement_users == [(7,), ()]
+    queued = await repository.list_queued_notifications()
+    assert [event.id for event, _users in queued] == [second.id]
+    assert queued[0][1] == [7]
+
+
+@pytest.mark.asyncio
+async def test_queued_items_expire_once_their_show_has_started(
+    repository, complete_event
+) -> None:
+    """A catch-up post pointing at a gig that began last night is worse than
+    silence, and leaving them queued is what makes the backlog a lag machine."""
+    await repository.seed_genre_roles({"indie rock": 1})
+    await _profiled(repository, 7, "Avery", cap=1)
+    gateway = FakePublicationGateway()
+    service = _live_service(repository, gateway)
+    first = await _approved_at(repository, complete_event, _LOCAL_COORDS, "exp-1")
+    second = await _approved_at(repository, complete_event, _LOCAL_COORDS, "exp-2")
+    await service.publish(first.id)
+    await service.publish(second.id)
+    assert len(await repository.list_queued_notifications()) == 1
+
+    # complete_event starts 2026-07-12; anything after that has begun.
+    dropped = await repository.expire_stale_queued(datetime(2026, 8, 1, tzinfo=UTC))
+
+    assert dropped == 1
+    assert await repository.list_queued_notifications() == []
+
+
+@pytest.mark.asyncio
+async def test_delivering_a_catchup_clears_the_queue(repository, complete_event) -> None:
+    await repository.seed_genre_roles({"indie rock": 1})
+    await _profiled(repository, 7, "Avery", cap=1)
+    gateway = FakePublicationGateway()
+    service = _live_service(repository, gateway)
+    first = await _approved_at(repository, complete_event, _LOCAL_COORDS, "drain-1")
+    second = await _approved_at(repository, complete_event, _LOCAL_COORDS, "drain-2")
+    await service.publish(first.id)
+    await service.publish(second.id)
+
+    await repository.mark_notifications_delivered((second.id,))
+
+    assert await repository.list_queued_notifications() == []
+    # Delivered is not pinged: the catch-up post does not retroactively count
+    # against a budget that was already spent.
+    assert await repository.get_pinged_users(second.id) == ()
+
+
+@pytest.mark.asyncio
+async def test_edits_name_who_was_actually_pinged_not_who_matches_now(
+    repository, complete_event
+) -> None:
+    """An artwork backfill weeks later must not rewrite history because
+    someone has since changed their profile."""
+    event = await _approved_at(repository, complete_event, _LOCAL_COORDS, "edit-live")
+    await repository.seed_genre_roles({"indie rock": 1})
+    await _profiled(repository, 7, "Avery")
+    gateway = FakePublicationGateway()
+    service = _live_service(repository, gateway)
+    await service.publish(event.id)
+
+    await _profiled(repository, 8, "Rowan")
+    await service.update_existing(event.id)
+
+    assert gateway.update_users == [(7,)]

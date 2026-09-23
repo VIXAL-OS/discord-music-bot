@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -11,7 +11,12 @@ from zoneinfo import ZoneInfo
 from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.models import EventRecord, EventStatus
-from music_event_bot.services.delivery import build_profiles, match_users, roles_for_event
+from music_event_bot.services.delivery import (
+    UserMatch,
+    build_profiles,
+    match_users,
+    roles_for_event,
+)
 from music_event_bot.storage.repositories import EventRepository
 
 logger = logging.getLogger(__name__)
@@ -24,6 +29,11 @@ class AnnouncementRouting:
     channel_id: int | None
     role_ids: tuple[int, ...]
     is_regional: bool
+    # Per-user delivery only. Empty while personal_delivery is off, and
+    # legitimately empty when an event matches nobody -- that posts silently
+    # rather than falling back to the catch-all role, so the channel stays a
+    # complete listing without pinging a community that did not ask for it.
+    user_ids: tuple[int, ...] = ()
 
 
 class PublicationGateway(Protocol):
@@ -35,6 +45,7 @@ class PublicationGateway(Protocol):
         role_ids: tuple[int, ...],
         scheduled_event_id: int | None,
         channel_id: int | None = None,
+        user_ids: tuple[int, ...] = (),
     ) -> int: ...
 
     async def update_published_event(
@@ -44,6 +55,7 @@ class PublicationGateway(Protocol):
         announcement_message_id: int,
         role_ids: tuple[int, ...],
         channel_id: int | None = None,
+        user_ids: tuple[int, ...] = (),
     ) -> None: ...
 
 
@@ -61,6 +73,7 @@ class PublicationService:
         local_radius_miles: int = 0,
         personal_delivery: str = "off",
         bucket_roles: dict[str, int] | None = None,
+        timezone: ZoneInfo | None = None,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
@@ -79,6 +92,9 @@ class PublicationService:
         # announcements before anyone's notifications change.
         self.personal_delivery = personal_delivery
         self.bucket_roles = bucket_roles or {}
+        # Daily ping budgets are counted against local midnight, not a
+        # rolling window, so "five a day" means what a member would assume.
+        self.timezone = timezone or ZoneInfo("UTC")
         # Discovery filters the blocklist at ingest, which does nothing for an
         # event that was already approved when the act was added to the roster.
         # This is the last gate before anything reaches the community.
@@ -102,32 +118,84 @@ class PublicationService:
             catchall_role_ids=self.catchall_role_ids,
         )
 
-    async def _log_shadow_delivery(self, event: EventRecord) -> None:
-        """Log who per-user delivery would mention. Sends nothing.
+    async def _personal_matches(self, event: EventRecord) -> tuple[UserMatch, ...]:
+        """Members whose taste and travel range cover this event, capped.
 
-        The daily cap is deliberately not applied: whether a match is pinged
-        or queued depends on everything else that went out that day, which a
-        single publish cannot see. delivery-report replays the sequence and
-        applies caps there.
+        Unlike the replay report, the cap here has to be applied against what
+        has already gone out today, which lives in the notification ledger.
         """
-        if self.personal_delivery == "off":
-            return
         rows = await self.repository.list_user_profiles()
         if not rows:
-            logger.info("Shadow delivery: no profiles seeded, %r would mention nobody", event.title)
-            return
+            return ()
         profiles = build_profiles(
             rows, await self.repository.list_user_taste("genre"), self.bucket_roles
         )
         matches = match_users(event, await self._roles_for(event), profiles)
-        in_band = [match for match in matches if match.within_band]
-        logger.info(
-            "Shadow delivery for %r: %d member(s) in range, %d filtered by metro (uncapped): %s",
-            event.title,
-            len(in_band),
-            len(matches) - len(in_band),
-            ", ".join(match.display_name for match in in_band) or "nobody",
+        midnight = (
+            datetime.now(UTC)
+            .astimezone(self.timezone)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
         )
+        decided: list[UserMatch] = []
+        for match in matches:
+            if not match.within_band:
+                # Out of range is not overflow: it never reaches the catch-up
+                # post either, so it is neither pinged nor queued.
+                decided.append(replace(match, pinged=False))
+                continue
+            budget = profiles[match.user_id].daily_ping_cap
+            spent = await self.repository.count_pings_since(match.user_id, midnight)
+            decided.append(
+                replace(match, pinged=budget <= 0 or spent < budget)
+            )
+        return tuple(decided)
+
+    async def _personal_routing(
+        self, event: EventRecord, routing: AnnouncementRouting
+    ) -> AnnouncementRouting:
+        """Fold per-user delivery into a routing decision.
+
+        Under "on" the role mentions come off and the matched members go on.
+        Two guards: with no profiles seeded at all, role pings stay, because
+        the alternative is the whole server going quiet on a config typo.
+        An event that simply matches nobody is different and posts silently.
+        """
+        if self.personal_delivery == "off":
+            return routing
+        matches = await self._personal_matches(event)
+        if not matches and not await self.repository.list_user_profiles():
+            logger.warning(
+                "personal_delivery is %r but no profiles are seeded; keeping role pings. "
+                "Run seed-profiles --apply.",
+                self.personal_delivery,
+            )
+            return routing
+        pinged = tuple(match.user_id for match in matches if match.pinged)
+        queued = tuple(match.user_id for match in matches if match.within_band and not match.pinged)
+        if self.personal_delivery == "shadow":
+            names = {match.user_id: match.display_name for match in matches}
+            logger.info(
+                "Shadow delivery for %r: would mention %d (%s), queue %d, "
+                "%d out of range",
+                event.title,
+                len(pinged),
+                ", ".join(names[user_id] for user_id in pinged) or "nobody",
+                len(queued),
+                sum(1 for match in matches if not match.within_band),
+            )
+            return routing
+        await self.repository.record_notifications(
+            event.id,
+            {
+                **{user_id: "queued" for user_id in queued},
+                **{user_id: "pinged" for user_id in pinged},
+            },
+        )
+        if queued:
+            logger.info(
+                "Queued %r for %d member(s) past their daily cap", event.title, len(queued)
+            )
+        return replace(routing, role_ids=(), user_ids=pinged)
 
     def _is_regional(self, event: EventRecord) -> bool:
         if self.regional_channel_id is None or self.home is None or self.local_radius_miles <= 0:
@@ -198,20 +266,25 @@ class PublicationService:
                 if announcement_id:
                     announcement_message_id = int(announcement_id)
                 else:
-                    routing = await self._routing_for(event)
+                    routing = await self._personal_routing(
+                        event, await self._routing_for(event)
+                    )
                     if routing.is_regional:
                         logger.info(
                             "Announcing %r in the regional channel without role pings",
                             event.title,
                         )
                     announcement_message_id = await self.gateway.create_or_find_announcement(
-                        event, routing.role_ids, scheduled_event_id, routing.channel_id
+                        event,
+                        routing.role_ids,
+                        scheduled_event_id,
+                        routing.channel_id,
+                        routing.user_ids,
                     )
                     await self.repository.record_announcement(
                         event_id, announcement_message_id, routing.channel_id
                     )
 
-                await self._log_shadow_delivery(event)
                 await self.repository.mark_published(event_id)
             except Exception as exc:
                 await self.repository.mark_publish_failed(event_id, str(exc))
@@ -276,10 +349,21 @@ class PublicationService:
             # there.
             pinned = int(stored_channel) if stored_channel else self.announcement_channel_id
             routing = await self._routing_for(event, channel_id=pinned)
+            if self.personal_delivery == "on":
+                # The card names who was actually pinged, read back from the
+                # ledger rather than recomputed. An artwork backfill weeks
+                # later must not rewrite history because someone has since
+                # changed their profile.
+                routing = replace(
+                    routing,
+                    role_ids=(),
+                    user_ids=await self.repository.get_pinged_users(event_id),
+                )
             await self.gateway.update_published_event(
                 event,
                 int(scheduled_id) if scheduled_id else None,
                 int(announcement_id),
                 routing.role_ids,
                 routing.channel_id,
+                routing.user_ids,
             )

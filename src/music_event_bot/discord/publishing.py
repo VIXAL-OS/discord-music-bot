@@ -22,17 +22,26 @@ def event_marker(event_id: str) -> str:
     return f"[music-event-id:{event_id}]"
 
 
-def _role_content(role_ids: tuple[int, ...], suffix: str) -> str:
-    if not role_ids:
+def _role_content(
+    role_ids: tuple[int, ...], suffix: str, user_ids: tuple[int, ...] = ()
+) -> str:
+    mentions = " ".join(
+        [f"<@&{role_id}>" for role_id in role_ids] + [f"<@{user_id}>" for user_id in user_ids]
+    )
+    if not mentions:
         return suffix
-    mentions = " ".join(f"<@&{role_id}>" for role_id in role_ids)
-    return f"{mentions} {suffix}"
+    # Truncated rather than split: one message is one notification however
+    # many ways a member is named in it, and a second message would cost
+    # everyone a second ping.
+    return f"{mentions[:1800]} {suffix}"
 
 
-def _role_mentions(role_ids: tuple[int, ...]) -> discord.AllowedMentions:
+def _role_mentions(
+    role_ids: tuple[int, ...], user_ids: tuple[int, ...] = ()
+) -> discord.AllowedMentions:
     return discord.AllowedMentions(
         everyone=False,
-        users=False,
+        users=[discord.Object(id=user_id) for user_id in user_ids] if user_ids else False,
         roles=[discord.Object(id=role_id) for role_id in role_ids] if role_ids else False,
         replied_user=False,
     )
@@ -129,6 +138,7 @@ class DiscordPublicationGateway:
         role_ids: tuple[int, ...],
         scheduled_event_id: int | None,
         channel_id: int | None = None,
+        user_ids: tuple[int, ...] = (),
     ) -> int:
         channel = await self._announcement_channel(channel_id)
         marker = event_marker(event.id)
@@ -147,8 +157,8 @@ class DiscordPublicationGateway:
         suffix = "New show alert!"
         if scheduled_event_id is not None:
             suffix += f"\n{self._event_link(scheduled_event_id)}"
-        content = _role_content(role_ids, suffix)
-        allowed_mentions = _role_mentions(role_ids)
+        content = _role_content(role_ids, suffix, user_ids)
+        allowed_mentions = _role_mentions(role_ids, user_ids)
         groups = await self.bot.repository.get_rsvps(event.id)
         message = await channel.send(
             content=content,
@@ -165,6 +175,7 @@ class DiscordPublicationGateway:
         announcement_message_id: int,
         role_ids: tuple[int, ...],
         channel_id: int | None = None,
+        user_ids: tuple[int, ...] = (),
     ) -> None:
         if event.starts_at is None or not event.venue or not event.location:
             raise ValueError("Published events require a start time, venue, and location")
@@ -194,9 +205,9 @@ class DiscordPublicationGateway:
             suffix += f"\n{self._event_link(scheduled_event_id)}"
         groups = await self.bot.repository.get_rsvps(event.id)
         await message.edit(
-            content=_role_content(role_ids, suffix),
+            content=_role_content(role_ids, suffix, user_ids),
             embed=announcement_embed(event, groups),
-            allowed_mentions=_role_mentions(role_ids),
+            allowed_mentions=_role_mentions(role_ids, user_ids),
             # Also backfills RSVP buttons onto announcements posted before
             # the feature existed.
             view=RsvpView(self.bot, event.id),

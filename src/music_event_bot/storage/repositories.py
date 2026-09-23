@@ -1332,6 +1332,101 @@ class EventRepository:
         ranked = sorted(votes.items(), key=lambda item: (-item[1][0], item[1][1]))
         return tuple(role_id for role_id, _ in ranked)
 
+    async def count_pings_since(self, user_id: int, cutoff: datetime) -> int:
+        """How much of a member's daily budget is already spent."""
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT COUNT(*) AS count FROM user_notifications "
+                "WHERE user_id = ? AND state = 'pinged' AND matched_at >= ?",
+                (str(user_id), cutoff.astimezone(UTC).isoformat()),
+            )
+            row = await cursor.fetchone()
+            return int(row["count"]) if row else 0
+
+    async def record_notifications(self, event_id: str, states: dict[int, str]) -> None:
+        """Record who an event was mentioned to, and who it was queued for."""
+        if not states:
+            return
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            for user_id, state in states.items():
+                await connection.execute(
+                    """
+                    INSERT INTO user_notifications(event_id, user_id, state, matched_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(event_id, user_id) DO NOTHING
+                    """,
+                    (event_id, str(user_id), state, now),
+                )
+            await connection.commit()
+
+    async def get_pinged_users(self, event_id: str) -> tuple[int, ...]:
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT user_id FROM user_notifications "
+                "WHERE event_id = ? AND state = 'pinged' ORDER BY user_id",
+                (event_id,),
+            )
+            return tuple(int(row["user_id"]) for row in await cursor.fetchall())
+
+    async def expire_stale_queued(self, now: datetime) -> int:
+        """Drop queued items whose show has already started.
+
+        A catch-up post pointing at a gig that began last night is worse than
+        silence, and leaving them queued is what turns the backlog into a
+        lag machine.
+        """
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                UPDATE user_notifications SET state = 'expired'
+                WHERE state = 'queued' AND event_id IN (
+                    SELECT id FROM events
+                    WHERE starts_at IS NOT NULL AND datetime(starts_at) <= datetime(?)
+                )
+                """,
+                (now.astimezone(UTC).isoformat(),),
+            )
+            await connection.commit()
+            return cursor.rowcount or 0
+
+    async def list_queued_notifications(self) -> list[tuple[EventRecord, list[int]]]:
+        """Queued overflow, soonest show first."""
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT e.* FROM events e
+                WHERE e.id IN (SELECT event_id FROM user_notifications WHERE state = 'queued')
+                ORDER BY e.starts_at IS NULL, e.starts_at
+                """
+            )
+            events = [_event_from_row(row) for row in await cursor.fetchall()]
+            results: list[tuple[EventRecord, list[int]]] = []
+            for event in events:
+                cursor = await connection.execute(
+                    "SELECT user_id FROM user_notifications "
+                    "WHERE event_id = ? AND state = 'queued'",
+                    (event.id,),
+                )
+                results.append(
+                    (event, [int(row["user_id"]) for row in await cursor.fetchall()])
+                )
+            return results
+
+    async def mark_notifications_delivered(self, event_ids: tuple[str, ...]) -> None:
+        if not event_ids:
+            return
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            await connection.execute(
+                f"""
+                UPDATE user_notifications SET state = 'delivered', delivered_at = ?
+                WHERE state = 'queued' AND event_id IN ({",".join("?" for _ in event_ids)})
+                """,
+                (now, *event_ids),
+            )
+            await connection.commit()
+
     async def list_announced_events(
         self, since: datetime
     ) -> list[tuple[EventRecord, datetime]]:
