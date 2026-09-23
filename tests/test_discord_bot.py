@@ -531,3 +531,83 @@ async def test_profile_summary_says_no_limit_for_an_uncapped_member(repository) 
     summary = await bot.profile_summary(7)
 
     assert "no limit" in summary and "catch-up" not in summary
+
+
+@pytest.mark.asyncio
+async def test_gaining_a_genre_role_seeds_a_profile(repository) -> None:
+    """Without this, everyone who joins after the seed run holds roles that
+    no longer drive delivery and matches nothing."""
+    await repository.seed_genre_roles({"goth": 10, "punk": 11})
+    bot = _profile_bot(repository)
+
+    await bot.on_member_update(_fake_member(7, "Avery"), _fake_member(7, "Avery", 10))
+
+    assert await repository.get_user_taste(7, "genre") == {"goth": 1}
+
+
+@pytest.mark.asyncio
+async def test_gaining_a_second_role_adds_its_genre(repository) -> None:
+    await repository.seed_genre_roles({"goth": 10, "punk": 11})
+    bot = _profile_bot(repository)
+    await bot.ensure_profile(_fake_member(7, "Avery", 10))
+
+    await bot.on_member_update(
+        _fake_member(7, "Avery", 10), _fake_member(7, "Avery", 10, 11)
+    )
+
+    assert await repository.get_user_taste(7, "genre") == {"goth": 1, "punk": 1}
+
+
+@pytest.mark.asyncio
+async def test_gaining_an_unrelated_role_changes_nothing(repository) -> None:
+    await repository.seed_genre_roles({"goth": 10})
+    bot = _profile_bot(repository)
+
+    await bot.on_member_update(_fake_member(7, "Avery"), _fake_member(7, "Avery", 99))
+
+    assert await repository.get_user_profile(7) is None
+
+
+@pytest.mark.asyncio
+async def test_a_role_cannot_re_add_a_genre_the_member_dropped(repository) -> None:
+    """A hand-tuned profile is the member's own. Re-joining a role they left
+    must not undo the drop."""
+    await repository.seed_genre_roles({"goth": 10, "punk": 11})
+    bot = _profile_bot(repository)
+    await bot.ensure_profile(_fake_member(7, "Avery", 10, 11))
+    await repository.set_user_taste(7, "genre", "punk", -1)
+    await repository.update_user_profile(7, daily_ping_cap=3)
+
+    await bot.on_member_update(
+        _fake_member(7, "Avery", 10), _fake_member(7, "Avery", 10, 11)
+    )
+
+    assert await repository.get_user_taste(7, "genre") == {"goth": 1, "punk": -1}
+    assert await repository.list_user_taste("genre") == {7: {"goth"}}
+
+
+@pytest.mark.asyncio
+async def test_a_customized_profile_is_skipped_by_a_later_seed_run(repository) -> None:
+    """update_user_profile stamps customized_at, which is the hook the
+    seeder already respects."""
+    from music_event_bot.services.profiles import (
+        SKIPPED_CUSTOMIZED,
+        GuildMember,
+        plan_role_seed,
+    )
+
+    await repository.seed_genre_roles({"goth": 10, "punk": 11})
+    bot = _profile_bot(repository)
+    await bot.ensure_profile(_fake_member(7, "Avery", 10))
+    await repository.update_user_profile(7, travel_band="in-town")
+
+    actions = plan_role_seed(
+        [GuildMember(user_id=7, display_name="Avery", role_ids=(10, 11))],
+        {10: ("goth",), 11: ("punk",)},
+        await repository.list_user_profiles(),
+        await repository.list_user_taste("genre"),
+        default_metro="pittsburgh",
+    )
+
+    assert actions[0].action == SKIPPED_CUSTOMIZED
+    assert actions[0].writes is False

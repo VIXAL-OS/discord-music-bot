@@ -733,6 +733,37 @@ class MusicEventDiscordBot(commands.Bot):
         logger.info("Seeded a profile for %s from %d role genre(s)", member.id, len(granted))
         return await self.repository.get_user_profile(member.id)
 
+    async def on_member_update(
+        self, before: discord.Member, after: discord.Member
+    ) -> None:
+        """Seed a profile the first time a member picks up a genre role.
+
+        Without this, everyone who joins after the seed run holds roles that
+        no longer drive delivery and so matches nothing. Deliberately not
+        gated on personal_delivery: profiles want to be complete before the
+        flip, not built up afterwards while people wonder why they are quiet.
+        """
+        gained = {role.id for role in after.roles} - {role.id for role in before.roles}
+        if not gained:
+            return
+        role_genres = bucket_genre_roles(
+            await self.repository.list_genre_roles(),
+            {normalize_text(genre) for genre in self.settings.role_map},
+        )
+        genres = sorted({genre for role_id in gained for genre in role_genres.get(role_id, ())})
+        if not genres:
+            return
+        profile = await self.ensure_profile(after)
+        if profile is None or profile.get("customized_at"):
+            # A hand-tuned profile is the member's own; picking up a role
+            # must not re-add a genre they deliberately dropped.
+            return
+        added = await self.repository.add_user_taste(
+            after.id, "genre", tuple(genres), source="role-seed"
+        )
+        if added:
+            logger.info("Added %d genre(s) to %s from a newly gained role", added, after.id)
+
     async def profile_summary(self, user_id: int) -> str:
         profile = await self.repository.get_user_profile(user_id)
         if profile is None:
