@@ -320,3 +320,111 @@ async def test_sync_reviews_caps_new_posts_per_cycle() -> None:
     # already-posted card still refreshed.
     assert synced_ids == ["event-0", "event-1", "event-3"]
     assert synced == 3
+
+
+class _CatchupRepoStub:
+    def __init__(self, queued: list[tuple[EventRecord, list[int]]]) -> None:
+        self.queued = queued
+        self.delivered: tuple[str, ...] = ()
+        self.expired_at: datetime | None = None
+
+    async def expire_stale_queued(self, now: datetime) -> int:
+        self.expired_at = now
+        return 0
+
+    async def list_queued_notifications(self) -> list[tuple[EventRecord, list[int]]]:
+        return self.queued
+
+    async def get_publication(self, event_id: str) -> dict[str, str]:
+        return {"announcement_message_id": "900", "announcement_channel_id": "3"}
+
+    async def mark_notifications_delivered(self, event_ids: tuple[str, ...]) -> None:
+        self.delivered = event_ids
+
+
+def _catchup_bot(repo: _CatchupRepoStub, **overrides: Any) -> MusicEventDiscordBot:
+    settings = Settings(
+        _env_file=None,
+        discord_token="test-token",
+        discord_guild_id=1,
+        review_channel_id=2,
+        announcement_channel_id=3,
+        admin_user_ids="4",
+        **{"personal_delivery": "on", **overrides},
+    )
+    app = cast(
+        Application,
+        SimpleNamespace(
+            settings=settings,
+            repository=repo,
+            discovery=SimpleNamespace(run=None),
+            profile=SimpleNamespace(),
+            blocklist=Blocklist(),
+        ),
+    )
+    return MusicEventDiscordBot(app)
+
+
+class _FakeChannel:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, Any]] = []
+
+    async def send(self, content: str, **kwargs: Any) -> None:
+        self.sent.append((content, kwargs))
+
+
+@pytest.mark.asyncio
+async def test_catchup_is_one_message_naming_every_overflowed_member(monkeypatch) -> None:
+    """A member who overflowed by six shows should pay one notification for
+    them, not six."""
+    import music_event_bot.discord.bot as bot_module
+
+    queued = [
+        (_record(id="a", title="Liturgy"), [7]),
+        (_record(id="b", title="Chat Pile"), [7, 8]),
+    ]
+    repo = _CatchupRepoStub(queued)
+    bot = _catchup_bot(repo)
+    channel = _FakeChannel()
+    monkeypatch.setattr(bot_module.discord, "TextChannel", _FakeChannel)
+    monkeypatch.setattr(bot, "get_channel", lambda _id: channel)
+
+    sent = await bot.post_catchup()
+
+    assert sent == 2
+    assert len(channel.sent) == 1
+    content, kwargs = channel.sent[0]
+    assert "Liturgy" in content and "Chat Pile" in content
+    assert "<@7>" in content and "<@8>" in content
+    # Jump links point at the card's own channel, not the catch-up's.
+    assert "/3/900" in content
+    assert {obj.id for obj in kwargs["allowed_mentions"].users} == {7, 8}
+    assert kwargs["allowed_mentions"].roles is False
+    assert repo.delivered == ("a", "b")
+
+
+@pytest.mark.asyncio
+async def test_catchup_truncates_a_long_queue_rather_than_splitting(monkeypatch) -> None:
+    import music_event_bot.discord.bot as bot_module
+
+    queued = [(_record(id=f"e{n}", title=f"Show {n}"), [7]) for n in range(20)]
+    repo = _CatchupRepoStub(queued)
+    bot = _catchup_bot(repo, catchup_max_events=5)
+    channel = _FakeChannel()
+    monkeypatch.setattr(bot_module.discord, "TextChannel", _FakeChannel)
+    monkeypatch.setattr(bot, "get_channel", lambda _id: channel)
+
+    sent = await bot.post_catchup()
+
+    assert sent == 5
+    assert len(channel.sent) == 1
+    assert "and 15 more waiting in the channel" in channel.sent[0][0]
+    assert repo.delivered == tuple(f"e{n}" for n in range(5))
+
+
+@pytest.mark.asyncio
+async def test_catchup_does_nothing_while_delivery_is_not_on(monkeypatch) -> None:
+    repo = _CatchupRepoStub([(_record(id="a"), [7])])
+    bot = _catchup_bot(repo, personal_delivery="shadow")
+    assert await bot.post_catchup() == 0
+    assert repo.expired_at is None
