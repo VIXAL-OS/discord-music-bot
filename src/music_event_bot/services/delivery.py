@@ -22,8 +22,9 @@ from zoneinfo import ZoneInfo
 from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.metros import metro as lookup_metro
 from music_event_bot.domain.metros import travel_band as lookup_travel_band
-from music_event_bot.domain.models import EventRecord
+from music_event_bot.domain.models import EventRecord, TasteProfile
 from music_event_bot.domain.normalization import normalize_text
+from music_event_bot.domain.scoring import score_event
 from music_event_bot.storage.repositories import EventRepository
 
 
@@ -78,7 +79,13 @@ class UserProfile:
     daily_ping_cap: int
     delivery: str
     # The member's taste resolved to the same role IDs the event router uses.
+    # This decides *whether* they match, and is deliberately no finer than a
+    # role mention already was.
     role_ids: frozenset[int]
+    # Named acts, which decide *which* matches survive a full day's cap.
+    artists: tuple[str, ...] = ()
+    demoted_artists: tuple[str, ...] = ()
+    venues: tuple[str, ...] = ()
 
     @property
     def home(self) -> GeoPoint:
@@ -87,6 +94,23 @@ class UserProfile:
     @property
     def radius_miles(self) -> int:
         return lookup_travel_band(self.travel_band).radius_miles
+
+    @property
+    def taste(self) -> TasteProfile:
+        """The member's taste in the shape score_event already understands.
+
+        Genres are left out on purpose. user_taste holds bucket names while
+        an event carries whatever labels its source used, so a bucket would
+        only ever match an event literally tagged with it -- and eligibility
+        is already settled by role overlap before scoring runs. What is left
+        is exactly the personal signal: acts the member named, and how close
+        the show is to them.
+        """
+        return TasteProfile(
+            artists=self.artists,
+            venues=self.venues,
+            demoted_artists=self.demoted_artists,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,14 +125,27 @@ class UserMatch:
     # False once the member is over their cap for the day: still a match,
     # but it waits for the catch-up post rather than being dropped.
     pinged: bool = True
+    # How much this member in particular should care, used to ration a full
+    # day's budget. An act they named scores 60; proximity alone tops out
+    # at 20, so the threshold between the two tiers is not a fine judgement.
+    score: int = 0
 
 
 def build_profiles(
     rows: dict[int, dict[str, Any]],
     genres_by_user: dict[int, set[str]],
     bucket_roles: dict[str, int],
+    artists_by_user: dict[int, dict[str, int]] | None = None,
+    venues_by_user: dict[int, dict[str, int]] | None = None,
 ) -> dict[int, UserProfile]:
-    """Turn stored rows into profiles, resolving taste to role IDs."""
+    """Turn stored rows into profiles, resolving taste to role IDs.
+
+    Artist rows carry their weight because both signs are used: a positive
+    one promotes a show up the day's ranking, a negative one pushes it down
+    the same way a rejected headliner does for the curator's own profile.
+    """
+    artists_by_user = artists_by_user or {}
+    venues_by_user = venues_by_user or {}
     profiles: dict[int, UserProfile] = {}
     for user_id, row in rows.items():
         role_ids = frozenset(
@@ -116,6 +153,7 @@ def build_profiles(
             for genre in genres_by_user.get(user_id, set())
             if genre in bucket_roles
         )
+        weighted = artists_by_user.get(user_id, {})
         profiles[user_id] = UserProfile(
             user_id=user_id,
             display_name=str(row.get("display_name") or user_id),
@@ -124,6 +162,17 @@ def build_profiles(
             daily_ping_cap=int(row["daily_ping_cap"]),
             delivery=str(row["delivery"]),
             role_ids=role_ids,
+            artists=tuple(sorted(name for name, weight in weighted.items() if weight > 0)),
+            demoted_artists=tuple(
+                sorted(name for name, weight in weighted.items() if weight <= 0)
+            ),
+            venues=tuple(
+                sorted(
+                    name
+                    for name, weight in venues_by_user.get(user_id, {}).items()
+                    if weight > 0
+                )
+            ),
         )
     return profiles
 
@@ -166,15 +215,46 @@ def match_users(
                 display_name=profile.display_name,
                 distance_miles=distance,
                 within_band=within,
+                score=score_event(
+                    event,
+                    profile.taste,
+                    home=profile.home,
+                    max_travel_radius_miles=profile.radius_miles,
+                ).score,
             )
         )
     return tuple(sorted(matches, key=lambda match: match.display_name.casefold()))
+
+
+# An act the member named scores 60 in score_event; proximity alone tops out
+# at 20. Anything at or above this is "a show they would be annoyed to miss".
+STRONG_SCORE = 50
+
+
+def spends_budget(score: int, spent: int, cap: int, reserved: int) -> bool:
+    """Whether a match may spend a ping, given what the day has already cost.
+
+    The cap alone rations by publish order, which is arbitrary with respect
+    to how much anyone cares: on a twenty-five show day you got the first
+    five, not the best five. Nothing online can know at noon whether a
+    better show publishes at six, so instead the last few slots are reserved
+    -- ordinary matches stop at cap minus reserved, and only a strong match
+    can spend the rest. A quiet day is unaffected, because the reserve is
+    only reached once the ordinary budget is gone.
+    """
+    if cap <= 0:
+        return True
+    if spent >= cap:
+        return False
+    ordinary = max(0, cap - reserved)
+    return score >= STRONG_SCORE or spent < ordinary
 
 
 def apply_daily_caps(
     announcements: list[tuple[datetime, tuple[UserMatch, ...]]],
     profiles: dict[int, UserProfile],
     timezone: ZoneInfo,
+    reserved: int = 0,
 ) -> list[tuple[datetime, tuple[UserMatch, ...]]]:
     """Mark matches past a member's daily budget as queued rather than pinged.
 
@@ -191,7 +271,9 @@ def apply_daily_caps(
             budget = profile.daily_ping_cap if profile else 0
             key = (match.user_id, day)
             used = spent.get(key, 0)
-            pinged = match.within_band and (budget <= 0 or used < budget)
+            pinged = match.within_band and spends_budget(
+                match.score, used, budget, reserved
+            )
             if pinged:
                 spent[key] = used + 1
             decided.append(
@@ -201,6 +283,7 @@ def apply_daily_caps(
                     distance_miles=match.distance_miles,
                     within_band=match.within_band,
                     pinged=pinged,
+                    score=match.score,
                 )
             )
         capped.append((announced_at, tuple(decided)))

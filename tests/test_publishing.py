@@ -883,3 +883,58 @@ async def test_edits_name_who_was_actually_pinged_not_who_matches_now(
     await service.update_existing(event.id)
 
     assert gateway.update_users == [(7,)]
+
+
+@pytest.mark.asyncio
+async def test_a_followed_act_reaches_a_member_whose_ordinary_budget_is_gone(
+    repository, complete_event
+) -> None:
+    """The reserve in the live path: the show you follow still reaches you
+    even though it published after your budget filled."""
+    await repository.seed_genre_roles({"indie rock": 1})
+    await _profiled(repository, 7, "Avery", cap=2)
+    await repository.set_user_taste(7, "artist", "liturgy", 1)
+    gateway = FakePublicationGateway()
+    # cap 2, 1 reserved -> one ordinary match, then only a followed act.
+    service = _live_service(repository, gateway, reserved_ping_slots=1)
+
+    ordinary_one = await _approved_at(repository, complete_event, _LOCAL_COORDS, "ord-1")
+    ordinary_two = await _approved_at(repository, complete_event, _LOCAL_COORDS, "ord-2")
+    followed = await _approved_event(
+        repository,
+        replace(
+            complete_event,
+            source_event_id="geo-followed",
+            title="Liturgy",
+            artist="Liturgy",
+            artists=("Liturgy",),
+            venue_latitude=_LOCAL_COORDS[0],
+            venue_longitude=_LOCAL_COORDS[1],
+        ),
+    )
+    for event_id in (ordinary_one.id, ordinary_two.id, followed.id):
+        await service.publish(event_id)
+
+    assert gateway.announcement_users == [(7,), (), (7,)]
+    queued = await repository.list_queued_notifications()
+    assert [event.id for event, _users in queued] == [ordinary_two.id]
+
+
+@pytest.mark.asyncio
+async def test_unfollowing_survives_a_reseed_and_lowers_the_score(repository) -> None:
+    """Both signs are stored, so an unfollowed act is evidence too."""
+    await repository.upsert_user_profile(
+        7,
+        display_name="Avery",
+        metro="pittsburgh",
+        travel_band="road-trip",
+        daily_ping_cap=5,
+        source="role-seed",
+    )
+    await repository.set_user_taste(7, "artist", "liturgy", -1)
+
+    weighted = await repository.list_user_taste_weighted("artist")
+
+    assert weighted == {7: {"liturgy": -1}}
+    # The positive-only view never sees it, so nothing treats it as a follow.
+    assert await repository.list_user_taste("artist") == {}

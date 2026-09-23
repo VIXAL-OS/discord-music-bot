@@ -148,6 +148,7 @@ class MusicEventDiscordBot(commands.Bot):
             personal_delivery=self.settings.personal_delivery,
             bucket_roles=self.settings.bucket_role_map,
             timezone=self.settings.timezone,
+            reserved_ping_slots=self.settings.reserved_ping_slots,
         )
         # Discovery writes late-arriving artwork straight to SQLite. Hand it the
         # publication service so an event that was announced before its flyer
@@ -777,6 +778,8 @@ class MusicEventDiscordBot(commands.Bot):
         cap_label = str(cap) if cap > 0 else "no limit"
         overflow = " - anything over waits for the daily catch-up post" if cap > 0 else ""
         held_label = ", ".join(held) if held else "none yet"
+        artists = await self.repository.get_user_taste(user_id, "artist")
+        followed = [value for value, weight in artists.items() if weight > 0]
         lines = [
             "**Your show alerts**",
             f"- Home: **{home_label}**",
@@ -787,6 +790,12 @@ class MusicEventDiscordBot(commands.Bot):
         ]
         if dropped:
             lines.append("- Dropped: " + ", ".join(dropped))
+        if followed:
+            lines.append(
+                "- Following: "
+                + ", ".join(followed)
+                + " (reserves the tail of your daily cap on a busy day)"
+            )
         return "\n".join(lines)
 
     def _register_profile_commands(self, guild: discord.Object) -> None:
@@ -915,6 +924,36 @@ class MusicEventDiscordBot(commands.Bot):
                 member.id, "genre", chosen, 1 if action.value == "add" else -1
             )
             verb = "Added" if action.value == "add" else "Dropped"
+            await _respond(interaction, f"{verb} **{chosen}**.")
+
+        @group.command(name="artist", description="Follow or unfollow an act")
+        @app_commands.choices(
+            action=[
+                app_commands.Choice(name="Follow", value="add"),
+                app_commands.Choice(name="Unfollow", value="drop"),
+            ]
+        )
+        @app_commands.describe(name="Band or artist name, spelled as the listings spell it")
+        async def artist_command(
+            interaction: discord.Interaction, action: app_commands.Choice[str], name: str
+        ) -> None:
+            member = await _member(interaction)
+            if member is None:
+                return
+            chosen = normalize_text(name)
+            if not chosen:
+                await interaction.response.send_message(
+                    "That is not a name I can match on.", ephemeral=True
+                )
+                return
+            await self.ensure_profile(member, create_if_empty=True)
+            # Following does not widen what you match -- the genre buckets
+            # still decide that. It decides which matches survive a busy
+            # day, by reserving the tail of your daily cap for acts you named.
+            await self.repository.set_user_taste(
+                member.id, "artist", chosen, 1 if action.value == "add" else -1
+            )
+            verb = "Following" if action.value == "add" else "Unfollowed"
             await _respond(interaction, f"{verb} **{chosen}**.")
 
         @genre_command.autocomplete("name")

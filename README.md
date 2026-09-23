@@ -144,6 +144,7 @@ Every setting uses the `MUSICBOT_` prefix. See `.env.example` for the full list.
 | `MUSICBOT_LOCAL_RADIUS_MILES` | Local/regional boundary in miles (default 75). Venues with no coordinates count as local |
 | `MUSICBOT_PERSONAL_DELIVERY` | Per-user delivery rollout: `off` (role pings), `shadow` (log what per-user mentions would send), `on` (mentions replace role pings). Default `off` |
 | `MUSICBOT_DEFAULT_DAILY_PING_CAP` | Ping budget a seeded profile starts with (default 5); overflow queues for the daily catch-up post |
+| `MUSICBOT_RESERVED_PING_SLOTS` | Tail of each daily cap reserved for shows featuring an act the member follows (default 2); 0 disables it |
 | `MUSICBOT_CATCHUP_HOUR` | Local hour for the daily catch-up post that drains queued overflow (default 18) |
 | `MUSICBOT_CATCHUP_MAX_EVENTS` | Most events one catch-up post lists before it says "and N more" (default 15) |
 | `MUSICBOT_ADMIN_USER_IDS` | Comma-separated authorized user IDs |
@@ -353,8 +354,11 @@ Every member has their own alert settings, and `/me` is how they change them. No
 - `/me cap` — most pings you want in one day; anything over waits for the catch-up post
 - `/me delivery` — mention me on matches, on everything, or never
 - `/me genre` — add or drop one of the server's genre buckets
+- `/me artist` — follow or unfollow an act
 
-Dropping a genre writes a negative weight rather than deleting the row, so re-joining the matching Discord role does not undo it. Changing anything through `/me` stamps the profile as customized, which is what stops `seed-profiles` handing back a setting you just changed.
+Following an act does not widen what you match — the genre buckets still decide that. It decides which matches survive a busy day: the tail of your daily cap is reserved for shows whose bill includes someone you follow, so the cap gives you the best few rather than the first few. On a quiet day the reserve is never reached and nothing changes.
+
+Dropping a genre or unfollowing an act writes a negative weight rather than deleting the row, so re-joining the matching Discord role does not undo it. Changing anything through `/me` stamps the profile as customized, which is what stops `seed-profiles` handing back a setting you just changed.
 
 
 ## Review and publication lifecycle

@@ -388,6 +388,7 @@ async def _run(args: argparse.Namespace) -> None:
         from datetime import timedelta
 
         from music_event_bot.services.delivery import (
+            STRONG_SCORE,
             apply_daily_caps,
             build_profiles,
             match_users,
@@ -398,6 +399,8 @@ async def _run(args: argparse.Namespace) -> None:
             await app.repository.list_user_profiles(),
             await app.repository.list_user_taste("genre"),
             settings.bucket_role_map,
+            await app.repository.list_user_taste_weighted("artist"),
+            await app.repository.list_user_taste_weighted("venue"),
         )
         if not profiles:
             raise ValueError("No profiles to report on; run seed-profiles --apply first")
@@ -421,7 +424,9 @@ async def _run(args: argparse.Namespace) -> None:
             )
             for event, announced_at in announced
         ]
-        capped = apply_daily_caps(sequence, profiles, settings.timezone)
+        capped = apply_daily_caps(
+            sequence, profiles, settings.timezone, settings.reserved_ping_slots
+        )
 
         # Three numbers per member, so the reduction is attributable: taste
         # alone is what their roles already gave them, then the metro, then
@@ -429,6 +434,7 @@ async def _run(args: argparse.Namespace) -> None:
         taste = Counter[int]()
         in_band = Counter[int]()
         pinged = Counter[int]()
+        strong = Counter[int]()
         busiest: dict[int, Counter[str]] = {}
         for announced_at, matches in capped:
             day = announced_at.astimezone(settings.timezone).date().isoformat()
@@ -436,6 +442,8 @@ async def _run(args: argparse.Namespace) -> None:
                 taste[match.user_id] += 1
                 if match.within_band:
                     in_band[match.user_id] += 1
+                    if match.score >= STRONG_SCORE:
+                        strong[match.user_id] += 1
                     # Counted before the cap on purpose: capped days all look
                     # identical, so only the uncapped load says whether the
                     # cap binds and how much lands in the catch-up post.
@@ -456,6 +464,8 @@ async def _run(args: argparse.Namespace) -> None:
                     "after_metro_today": round(in_band[user_id] / days, 1),
                     "after_cap_today": round(pinged[user_id] / days, 1),
                     "queued_total": in_band[user_id] - pinged[user_id],
+                    "followed_acts": len(profile.artists),
+                    "strong_matches": strong[user_id],
                     "busiest_day": peak[0][1] if peak else 0,
                 }
             )

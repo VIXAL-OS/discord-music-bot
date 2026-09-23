@@ -16,6 +16,7 @@ from music_event_bot.services.delivery import (
     build_profiles,
     match_users,
     roles_for_event,
+    spends_budget,
 )
 from music_event_bot.storage.repositories import EventRepository
 
@@ -74,6 +75,7 @@ class PublicationService:
         personal_delivery: str = "off",
         bucket_roles: dict[str, int] | None = None,
         timezone: ZoneInfo | None = None,
+        reserved_ping_slots: int = 0,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
@@ -95,6 +97,11 @@ class PublicationService:
         # Daily ping budgets are counted against local midnight, not a
         # rolling window, so "five a day" means what a member would assume.
         self.timezone = timezone or ZoneInfo("UTC")
+        # The tail of each member's daily budget, spendable only by a show
+        # they would be annoyed to miss. Without it the cap rations by
+        # publish order, which on a busy day means the first five rather
+        # than the best five.
+        self.reserved_ping_slots = reserved_ping_slots
         # Discovery filters the blocklist at ingest, which does nothing for an
         # event that was already approved when the act was added to the roster.
         # This is the last gate before anything reaches the community.
@@ -128,7 +135,11 @@ class PublicationService:
         if not rows:
             return ()
         profiles = build_profiles(
-            rows, await self.repository.list_user_taste("genre"), self.bucket_roles
+            rows,
+            await self.repository.list_user_taste("genre"),
+            self.bucket_roles,
+            await self.repository.list_user_taste_weighted("artist"),
+            await self.repository.list_user_taste_weighted("venue"),
         )
         matches = match_users(event, await self._roles_for(event), profiles)
         midnight = (
@@ -146,7 +157,10 @@ class PublicationService:
             budget = profiles[match.user_id].daily_ping_cap
             spent = await self.repository.count_pings_since(match.user_id, midnight)
             decided.append(
-                replace(match, pinged=budget <= 0 or spent < budget)
+                replace(
+                    match,
+                    pinged=spends_budget(match.score, spent, budget, self.reserved_ping_slots),
+                )
             )
         return tuple(decided)
 

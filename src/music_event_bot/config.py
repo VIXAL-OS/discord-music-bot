@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # One public catch-up post a day drains what overflowed the caps. Kept
     # to a single message: a member who overflowed by six shows should pay
     # one notification for them, not six.
+    # The tail of each member's daily cap, spendable only by a strong match
+    # (an act they named). Without it the cap rations by publish order,
+    # which on a busy day means the first five rather than the best five.
+    reserved_ping_slots: int = 2
     catchup_hour: int = 18
     catchup_max_events: int = 15
     admin_user_ids: str = ""

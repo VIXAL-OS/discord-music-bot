@@ -1540,6 +1540,23 @@ class EventRepository:
                 grouped.setdefault(int(row["user_id"]), set()).add(str(row["value"]))
         return grouped
 
+    async def list_user_taste_weighted(self, kind: str) -> dict[int, dict[str, int]]:
+        """Every member's values for one kind, weights included.
+
+        Unlike list_user_taste this keeps the negatives: a demoted act is
+        evidence too, it just points the other way.
+        """
+        grouped: dict[int, dict[str, int]] = {}
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT user_id, value, weight FROM user_taste WHERE kind = ?", (kind,)
+            )
+            for row in await cursor.fetchall():
+                grouped.setdefault(int(row["user_id"]), {})[str(row["value"])] = int(
+                    row["weight"]
+                )
+        return grouped
+
     async def upsert_user_profile(
         self,
         user_id: int,
