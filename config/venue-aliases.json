@@ -43,5 +43,10 @@
     "name": "Carnegie of Homestead Music Hall",
     "aliases": ["Carnegie of Homestead", "Carnegie Music Hall of Homestead", "Carnegie Library Music Hall of Homestead"],
     "note": "Word order genuinely differs between sources, so no mechanical rule collapses these. Not to be confused with Carnegie Music Hall in Oakland, which is a different room in a different neighbourhood."
+  },
+  {
+    "name": "Golden Thread OTO Lodge",
+    "aliases": ["Golden Thread OTO Oasis"],
+    "note": "One body under two names: arcane.city renamed the venue from Oasis to Lodge between scrapes, so the same WITCHFEST listing (one arcane URL, same start) was published twice on 2026-10-03, once under each name."
   }
 ]
