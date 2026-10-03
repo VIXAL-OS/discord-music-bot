@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+from functools import lru_cache
+
 from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.models import DiscoveredEvent, EventRecord, ScoreResult, TasteProfile
 from music_event_bot.domain.normalization import normalize_genre, normalize_text
@@ -17,6 +21,36 @@ _TRIBUTE_MARKERS = (
     "revisited",
 )
 _LOCAL_TRIBUTE_MILES = 40
+
+# What may follow the headliner in a bill title: punctuation that starts a
+# support list, tour name or venue ("Distant: Into Despair Tour", "Oso Oso,
+# Leisure Hour", "Knox @ KEMBA Live!"), a connective word, or the end. Dashes,
+# slashes and joiners only count with a space before them, so "Jay-Z", "AC/DC"
+# and "Blink-182" never read as "Jay", "AC" or "Blink" headlining.
+_BILL_BREAK = (
+    r"(?:\s*$|\s*[,:;|@(\[]|\s+[-–—/+&]|\s+(?:w/|with|feat\.?|featuring|x|vs\.?)\s)"
+)
+
+
+@lru_cache(maxsize=4096)
+def _headliner_pattern(normalized_name: str) -> re.Pattern[str]:
+    tokens = (re.escape(token) for token in normalized_name.split())
+    return re.compile(r"^\W*" + r"[\W_]+".join(tokens) + _BILL_BREAK, re.IGNORECASE)
+
+
+def _title_headlined_by(title: str, normalized_name: str) -> bool:
+    """True when the title opens with this act as its own billing.
+
+    The lineup-less fallback used to dock any demoted name found anywhere in
+    the title. That penalised support acts ("Febuary w/ Kaiba") and words
+    inside other band names ("..., War Bond" docked as WAR), and either can
+    knock a single genre match below the review gate. Demotion is meant for
+    headliners, so the name must lead the title and end at a bill break.
+    """
+    if not normalized_name:
+        return False
+    folded = unicodedata.normalize("NFKC", title or "")
+    return _headliner_pattern(normalized_name).search(folded) is not None
 
 
 def score_event(
@@ -151,7 +185,7 @@ def score_event(
                 (
                     display
                     for normalized, display in demoted.items()
-                    if f" {normalized} " in title_padded
+                    if _title_headlined_by(event.title, normalized)
                 ),
                 "",
             )

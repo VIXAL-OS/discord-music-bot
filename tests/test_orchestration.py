@@ -400,6 +400,35 @@ async def test_affinity_gate_applies_to_every_source() -> None:
         assert bool(curated_reasons) is not requires_affinity
 
 
+@pytest.mark.asyncio
+async def test_gated_curated_events_are_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """A show someone put on a curated feed must not vanish without a trace."""
+    settings = Settings(_env_file=None)
+    unrelated = DiscoveredEvent(
+        source_name="fixture-feed",
+        source_event_id="unrelated-local",
+        title="Unrelated Local Listing",
+    )
+
+    for requires_affinity in (False, True):
+        caplog.clear()
+        source = StaticSource("fixture-feed", [unrelated], requires_affinity=requires_affinity)
+        orchestrator = DiscoveryOrchestrator(
+            settings, cast(EventRepository, RecordingRepository()), [source], TasteProfile()
+        )
+        with caplog.at_level("INFO", logger="music_event_bot.services.orchestration"):
+            await orchestrator.run()
+
+        gated = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Gated")]
+        if requires_affinity:
+            assert gated == []
+        else:
+            assert gated == [
+                "Gated 'Unrelated Local Listing' from fixture-feed: affinity 0 < 15 "
+                "(no artist or genre match)"
+            ]
+
+
 def _record(**overrides: Any) -> EventRecord:
     values: dict[str, Any] = {
         "id": "ev-1",

@@ -19,7 +19,12 @@ class Database:
         connection = await aiosqlite.connect(self.path)
         connection.row_factory = aiosqlite.Row
         await connection.execute("PRAGMA foreign_keys = ON")
-        await connection.execute("PRAGMA busy_timeout = 5000")
+        # Every call opens its own connection, so the last one to close
+        # checkpoints the WAL under an exclusive lock. On the USB drive this
+        # database lives on, a checkpoint after a big discovery write (or a
+        # spun-down disk waking up) routinely outlasted the old 5s wait, and
+        # the "database is locked" that followed killed whole discovery runs.
+        await connection.execute("PRAGMA busy_timeout = 30000")
         try:
             yield connection
         finally:

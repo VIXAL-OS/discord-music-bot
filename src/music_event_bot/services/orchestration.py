@@ -324,6 +324,19 @@ class DiscoveryOrchestrator:
                     score.score < self.settings.minimum_match_score
                 ):
                     ignored += 1
+                    # A curated feed is somebody deliberately adding a show
+                    # (the curator calendar, a venue's own feed), so dropping
+                    # one is worth a line. These drops were silent for months
+                    # and read as a broken calendar ingest.
+                    if curated:
+                        logger.info(
+                            "Gated %r from %s: affinity %d < %d (%s)",
+                            event.title,
+                            source.name,
+                            score.affinity_score,
+                            self.settings.minimum_affinity_score,
+                            "; ".join(score.reasons) or "no artist or genre match",
+                        )
                     continue
                 if venue_trusted:
                     score = replace(

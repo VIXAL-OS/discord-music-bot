@@ -329,6 +329,39 @@ def test_previously_rejected_headliner_is_docked_not_banned() -> None:
     assert score_event(support_elsewhere, profile).affinity_score == 15
 
 
+@pytest.mark.parametrize(
+    ("title", "demoted", "docked"),
+    [
+        # The headliner leads the title and ends at a bill break.
+        ("Distant: Into Despair Tour 2026", "Distant", True),
+        ("Silverstein & Story of the Year", "Silverstein", True),
+        ("Heal The Hurt - No Hope In Hell Tour", "Heal The Hurt", True),
+        ("Oso Oso", "Oso Oso", True),
+        ("Knox @ KEMBA Live!", "Knox", True),
+        # Support acts are not the headliner.
+        ("Febuary w/ Kaiba + foreverforaday", "Kaiba", False),
+        # A demoted name inside another act's name is not that act.
+        ("Clinton, Horsesitter, Fishgills, War Bond", "WAR", False),
+        ("War Bond", "WAR", False),
+        ("Jay-Z", "Jay", False),
+        ("AC/DC: Power Up Tour", "AC", False),
+    ],
+)
+def test_title_fallback_demotion_only_docks_the_headliner(
+    title: str, demoted: str, docked: bool
+) -> None:
+    profile = TasteProfile(genres=("metal",), demoted_artists=(demoted,))
+    event = DiscoveredEvent(
+        source_name="test",
+        source_event_id=f"title-demote-{title}",
+        title=title,
+        genres=("metal",),
+    )
+    result = score_event(event, profile)
+    assert (result.affinity_score == 0) is docked
+    assert any("previously rejected" in reason for reason in result.reasons) is docked
+
+
 def test_genre_alias_spellings_count_once() -> None:
     event = DiscoveredEvent(
         source_name="test",

@@ -201,11 +201,13 @@ class MusicEventDiscordBot(commands.Bot):
         self._initial_cycle_task = asyncio.create_task(self._initial_cycle())
 
     async def _initial_cycle(self) -> None:
+        # run_discovery logs and schedules its own retry on failure, so a
+        # failed startup discovery no longer also skips the review sync.
+        await self.scheduler.run_discovery()
         try:
-            await self.music_app.discovery.run()
             await self.sync_reviews()
         except Exception:
-            logger.exception("Initial discovery/review cycle failed")
+            logger.exception("Initial review sync failed")
 
     async def close(self) -> None:
         self.scheduler.shutdown()

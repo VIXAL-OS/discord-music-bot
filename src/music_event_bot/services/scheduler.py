@@ -2,19 +2,60 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from music_event_bot.config import Settings
 
 logger = logging.getLogger(__name__)
+
+DISCOVERY_RETRY_DELAY = timedelta(minutes=30)
+DISCOVERY_MAX_RETRIES = 3
 
 
 class BotScheduler:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.scheduler = AsyncIOScheduler(timezone=settings.timezone)
+        self._discover: Callable[[], Awaitable[object]] | None = None
+
+    async def run_discovery(self, attempt: int = 0) -> None:
+        """Run discovery, and schedule a retry when it fails.
+
+        Discovery is a once-a-day cron job, so a run that raised used to mean a
+        full day with no new events: a single transient "database is locked"
+        on 2026-10-02 left every calendar entry added since the previous run
+        unread until the next morning. A failure now gets a few spaced-out
+        retries before giving up until the next scheduled run.
+        """
+        if self._discover is None:
+            raise RuntimeError("run_discovery called before configure()")
+        try:
+            await self._discover()
+        except Exception:
+            if attempt >= DISCOVERY_MAX_RETRIES:
+                logger.exception(
+                    "Discovery failed on attempt %d; giving up until the next scheduled run",
+                    attempt + 1,
+                )
+                return
+            retry_at = datetime.now(self.settings.timezone) + DISCOVERY_RETRY_DELAY
+            logger.exception(
+                "Discovery failed on attempt %d; retrying at %s",
+                attempt + 1,
+                retry_at.isoformat(timespec="minutes"),
+            )
+            self.scheduler.add_job(
+                self.run_discovery,
+                DateTrigger(run_date=retry_at, timezone=self.settings.timezone),
+                kwargs={"attempt": attempt + 1},
+                id="discovery-retry",
+                max_instances=1,
+                replace_existing=True,
+            )
 
     def configure(
         self,
@@ -25,8 +66,9 @@ class BotScheduler:
         remind_rsvps: Callable[[], Awaitable[object]] | None = None,
         post_catchup: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
+        self._discover = discover
         self.scheduler.add_job(
-            discover,
+            self.run_discovery,
             CronTrigger.from_crontab(self.settings.discovery_cron, timezone=self.settings.timezone),
             id="discovery",
             max_instances=1,
