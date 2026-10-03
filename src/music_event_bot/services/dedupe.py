@@ -48,6 +48,7 @@ _KEEPER_RANK = {
     EventStatus.INCOMPLETE.value: 5,
     EventStatus.REJECTED.value: 6,
     EventStatus.EXPIRED.value: 7,
+    EventStatus.SUPERSEDED.value: 8,
 }
 
 _TITLE_NOISE = frozenset(

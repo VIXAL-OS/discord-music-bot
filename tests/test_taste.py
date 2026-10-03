@@ -494,6 +494,28 @@ class TestTasteEnricher:
         assert fetcher.calls == ["Coil"]
         assert len(mapper.calls) == 1
 
+    async def test_tags_the_mapper_rules_out_are_not_genres(
+        self, repository: EventRepository, tmp_path: Path
+    ) -> None:
+        settings = Settings(
+            _env_file=None,
+            database_path=tmp_path / "enrich.sqlite3",
+            lastfm_api_key="key",
+            anthropic_api_key="key",
+            genre_role_map='{"Industrial":"1","Goth":"2"}',
+        )
+        # "jbm" is an old stage name and "child" a wrong-artist tag; the
+        # mapper answers both with empty lists, meaning "not a genre".
+        fetcher = StubFetcher({"Jesse Marchant": [("jbm", 15), ("darkwave", 60), ("child", 12)]})
+        mapper = StubMapper({"darkwave": (("goth",), ("gothic",))})
+        enricher = TasteEnricher(settings, repository, fetcher=fetcher, mapper=mapper)
+
+        enriched = await enricher.enrich(TasteProfile(artists=("Jesse Marchant",)))
+
+        assert set(enriched.genres) == {"darkwave"}
+        assert "jbm" not in enriched.weak_genres
+        assert "child" not in enriched.weak_genres
+
     async def test_tags_survive_without_anthropic_key(
         self, repository: EventRepository, tmp_path: Path
     ) -> None:

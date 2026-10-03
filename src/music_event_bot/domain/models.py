@@ -15,6 +15,10 @@ class EventStatus(StrEnum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     PUBLISH_FAILED = "publish_failed"
+    # A farther stop of a tour whose closer stop is already in review or
+    # approved. Kept as a row, not deleted, so discovery recognises the stop
+    # when it sees it again instead of inserting it fresh every night.
+    SUPERSEDED = "superseded"
 
 
 @dataclass(frozen=True, slots=True)

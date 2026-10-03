@@ -59,6 +59,9 @@ class RecordingRepository:
     async def record_job_run(self, *args: Any, **kwargs: Any) -> None:
         return None
 
+    async def backfill_venue_coordinates(self) -> int:
+        return 0
+
     async def dedupe_tour_events(self, *args: Any) -> int:
         return 0
 
@@ -488,6 +491,9 @@ class _ArtworkRepository:
 
     async def record_job_run(self, *args: Any, **kwargs: Any) -> None:
         return None
+
+    async def backfill_venue_coordinates(self) -> int:
+        return 0
 
     async def dedupe_tour_events(self, *args: Any) -> int:
         return 0

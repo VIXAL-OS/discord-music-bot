@@ -67,6 +67,18 @@ class TasteEnricher:
         tags = await self.repository.get_tags_for_artists(set(artist_names))
         if not tags:
             return profile
+        # The broad vocabulary itself is mapped too, so announcement role
+        # tagging can alias Ticketmaster genre names onto Discord buckets.
+        broad_vocab = {normalize_text(genre) for genre in BROAD_GENRES}
+        mappings = await self._ensure_tag_mappings(tags | broad_vocab)
+        # The mapper answers with two empty lists for a tag that is not a
+        # music genre at all. Community tags are full of those -- "kids",
+        # "dark", an old stage name like "jbm", a children's act MusicBrainz
+        # confused with a liked one -- and as strong genres they match as bare
+        # words in event titles ("Wild Child", "JBM Promotions presents").
+        # Tags the mapper has not ruled on are kept, so enrichment still fails
+        # soft without an API key.
+        tags = {tag for tag in tags if tag not in mappings or any(mappings[tag])}
         umbrella = self.settings.umbrella_genre_set
         strong = set(profile.genres)
         weak = set(profile.weak_genres)
@@ -75,10 +87,6 @@ class TasteEnricher:
                 weak.add(tag)
             else:
                 strong.add(tag)
-        # The broad vocabulary itself is mapped too, so announcement role
-        # tagging can alias Ticketmaster genre names onto Discord buckets.
-        broad_vocab = {normalize_text(genre) for genre in BROAD_GENRES}
-        mappings = await self._ensure_tag_mappings(tags | broad_vocab)
         for tag in tags:
             if tag not in mappings:
                 continue

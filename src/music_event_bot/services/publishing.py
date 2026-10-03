@@ -253,6 +253,12 @@ class PublicationService:
             event = await self.repository.get_event(event_id)
             if event is None:
                 raise KeyError(f"Unknown event ID: {event_id}")
+            if event.venue_latitude is None or event.venue_longitude is None:
+                # A coordless venue routes as local. Discovery borrows
+                # coordinates from the same room nightly, but a slash
+                # submission can be approved and published before that runs.
+                await self.repository.backfill_venue_coordinates()
+                event = await self.repository.get_event(event_id) or event
             publication = await self.repository.begin_publication(event_id)
             try:
                 # Inside the try on purpose: the existing handler records this

@@ -63,6 +63,7 @@ class Application:
         if aliases_added:
             logger.info("Seeded %d genre->role aliases from cached tag mappings", aliases_added)
         await repository.backfill_ticketmaster_coordinates()
+        await repository.backfill_venue_coordinates()
         await repository.rescore_reviewable_events(
             profile,
             settings.home_point,

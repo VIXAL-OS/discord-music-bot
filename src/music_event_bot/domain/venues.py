@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,3 +83,42 @@ class VenueAliases:
 
     def as_mapping(self) -> dict[str, str]:
         return dict(self.entries)
+
+
+_STATE_PART = re.compile(r"([A-Z]{2})(?:\s+(\d{5})(?:-\d{4})?)?")
+
+
+def _locality(location: str | None) -> tuple[str | None, str | None]:
+    """(city|state, zip) read off an address, either part None when absent.
+
+    The zip is only taken where it follows the state code, because a bare
+    five-digit run is as likely to be a street number (TSDMAAC is 15701 James
+    Couzens Fwy) as a zip.
+    """
+    parts = [part.strip() for part in (location or "").split(",")]
+    for index, part in enumerate(parts):
+        match = _STATE_PART.fullmatch(part)
+        if match is None or index == 0:
+            continue
+        city = " ".join(parts[index - 1].casefold().split())
+        zip_code = match.group(2)
+        if zip_code is None and index + 1 < len(parts) and re.fullmatch(r"\d{5}", parts[index + 1]):
+            zip_code = parts[index + 1]
+        return f"{city}|{match.group(1)}", zip_code
+    return None, None
+
+
+def same_locality(first: str | None, second: str | None) -> bool:
+    """True when two addresses provably name the same town.
+
+    Venue names repeat across cities ("The Foundry" is in Cleveland and
+    elsewhere; "Spirit" is a Pittsburgh room and a common word), so a shared
+    name alone is not enough to lend one event another's coordinates. Zips
+    decide when both addresses carry one; otherwise city and state must
+    match. An address that names neither proves nothing and returns False.
+    """
+    first_city, first_zip = _locality(first)
+    second_city, second_zip = _locality(second)
+    if first_zip and second_zip:
+        return first_zip == second_zip
+    return first_city is not None and first_city == second_city

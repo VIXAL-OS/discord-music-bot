@@ -21,13 +21,15 @@ from music_event_bot.domain.models import (
 )
 from music_event_bot.domain.normalization import (
     canonical_fingerprint,
+    headliner_from_title,
     normalize_genres,
     normalize_text,
     normalize_url,
     normalize_venue,
+    strip_tour_suffix,
 )
 from music_event_bot.domain.scoring import score_event
-from music_event_bot.domain.venues import VenueAliases
+from music_event_bot.domain.venues import VenueAliases, same_locality
 from music_event_bot.storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -501,10 +503,16 @@ class EventRepository:
         Tours are grouped by normalized headliner (falling back to the
         "artist match: X" reason for lineup-less title matches). Approved and
         published stops anchor their group: undecided siblings farther than
-        the anchor are deleted, but a strictly closer sibling survives so the
-        reviewer can catch a wrong pick. Guards: same-venue siblings are kept
-        (multi-night runs), stops more than 120 days apart are separate
+        the anchor are superseded, but a strictly closer sibling survives so
+        the reviewer can catch a wrong pick. Guards: same-venue siblings are
+        kept (multi-night runs), stops more than 120 days apart are separate
         engagements, and human-requested events are never touched.
+
+        Siblings used to be deleted outright. Discovery then failed to find
+        them by source id the next night and inserted them again as fresh
+        review rows, so the same farther stops cycled through the queue every
+        day -- and on a night the run crashed before this step, they stayed
+        there for the reviewer to reject by hand.
         """
         async with self.database.connect() as connection:
             # Human-initiated events (slash submissions, @mention requests)
@@ -512,7 +520,7 @@ class EventRepository:
             cursor = await connection.execute(
                 """
                 SELECT * FROM events
-                WHERE status IN ('discovered', 'pending_review')
+                WHERE status IN ('discovered', 'pending_review', 'incomplete')
                   AND id NOT IN (
                     SELECT event_id FROM event_sources
                     WHERE source_name IN ('manual', 'request')
@@ -526,17 +534,32 @@ class EventRepository:
             )
             anchors = [_event_from_row(row) for row in await cursor.fetchall()]
 
-        def group_key(event: EventRecord) -> str:
+        def artist_key(event: EventRecord) -> str:
             if event.artist:
-                return normalize_text(event.artist)
+                return strip_tour_suffix(event.artist)
             for name in event.artists:
-                normalized = normalize_text(name)
+                normalized = strip_tour_suffix(name)
                 if normalized:
                     return normalized
             for reason in event.match_reasons:
                 if reason.startswith("artist match: "):
                     return normalize_text(reason[len("artist match: ") :])
             return ""
+
+        # Calendar and venue-feed rows usually carry no artist field at all,
+        # only a title, so they were never grouped: an ICS "WINDHAND w/ Sonja"
+        # sat beside a published Ticketmaster "Windhand" untouched. A title
+        # can only JOIN a tour some row's artist field established, though --
+        # two local parties that merely share a series name must not be
+        # allowed to supersede each other.
+        established = {key for event in (*candidates, *anchors) if (key := artist_key(event))}
+
+        def group_key(event: EventRecord) -> str:
+            key = artist_key(event)
+            if key:
+                return key
+            from_title = headliner_from_title(event.title)
+            return from_title if from_title in established else ""
 
         def distance(record: EventRecord) -> float:
             if record.venue_latitude is None or record.venue_longitude is None:
@@ -556,7 +579,7 @@ class EventRepository:
             if key in grouped:
                 anchors_by_key.setdefault(key, []).append(event)
 
-        to_delete: list[str] = []
+        to_supersede: list[str] = []
         for key, siblings in grouped.items():
             kept = anchors_by_key.get(key, [])
             rest = siblings
@@ -585,16 +608,16 @@ class EventRepository:
                     for k in kept
                 )
                 if same_tour and distance(record) > nearest_kept:
-                    to_delete.append(record.id)
-        if to_delete:
+                    to_supersede.append(record.id)
+        if to_supersede:
             async with self.database.connect() as connection:
-                await connection.execute("PRAGMA foreign_keys = ON")
-                placeholders = ",".join("?" for _ in to_delete)
+                placeholders = ",".join("?" for _ in to_supersede)
                 await connection.execute(
-                    f"DELETE FROM events WHERE id IN ({placeholders})", to_delete
+                    f"UPDATE events SET status = ?, updated_at = ? WHERE id IN ({placeholders})",
+                    (EventStatus.SUPERSEDED.value, _now().isoformat(), *to_supersede),
                 )
                 await connection.commit()
-        return len(to_delete)
+        return len(to_supersede)
 
     async def published_with_closer_pending(self, home: GeoPoint) -> list[tuple[str, str]]:
         """Published events for which a strictly closer same-artist stop exists."""
@@ -1831,6 +1854,69 @@ class EventRepository:
                         now,
                         row["id"],
                     ),
+                )
+                updated += result.rowcount
+            await connection.commit()
+        return updated
+
+    async def backfill_venue_coordinates(self) -> int:
+        """Lend coordless events the coordinates of another event at the same room.
+
+        Only Ticketmaster supplies coordinates, so every show the curator
+        calendar or a venue feed adds arrives without them -- and the channel
+        split treats a coordless venue as local. That sent Skully's (Columbus,
+        168 miles out) to the main channel with role pings, though the same
+        room's Ticketmaster rows had sat in this table with coordinates all
+        along. Borrowing needs the same normalized venue AND addresses that
+        agree on the town, because venue names repeat across cities.
+        """
+        updated = 0
+        now = _now().isoformat()
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT venue_normalized, location, venue_latitude, venue_longitude
+                FROM events
+                WHERE venue_latitude IS NOT NULL AND venue_longitude IS NOT NULL
+                  AND venue_normalized IS NOT NULL AND venue_normalized != ''
+                ORDER BY updated_at DESC
+                """
+            )
+            donors: dict[str, list[tuple[str | None, float, float]]] = {}
+            for row in await cursor.fetchall():
+                donors.setdefault(str(row["venue_normalized"]), []).append(
+                    (row["location"], float(row["venue_latitude"]), float(row["venue_longitude"]))
+                )
+            if not donors:
+                return 0
+            cursor = await connection.execute(
+                """
+                SELECT id, venue_normalized, location FROM events
+                WHERE (venue_latitude IS NULL OR venue_longitude IS NULL)
+                  AND venue_normalized IS NOT NULL AND venue_normalized != ''
+                """
+            )
+            for row in await cursor.fetchall():
+                match = next(
+                    (
+                        (latitude, longitude)
+                        for location, latitude, longitude in donors.get(
+                            str(row["venue_normalized"]), []
+                        )
+                        if same_locality(row["location"], location)
+                    ),
+                    None,
+                )
+                if match is None:
+                    continue
+                result = await connection.execute(
+                    """
+                    UPDATE events
+                    SET venue_latitude = ?, venue_longitude = ?, updated_at = ?
+                    WHERE id = ?
+                      AND (venue_latitude IS NULL OR venue_longitude IS NULL)
+                    """,
+                    (match[0], match[1], now, row["id"]),
                 )
                 updated += result.rowcount
             await connection.commit()

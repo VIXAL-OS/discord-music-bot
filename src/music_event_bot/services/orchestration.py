@@ -377,11 +377,17 @@ class DiscoveryOrchestrator:
                 artwork_found += 1
                 await self._refresh_live_announcement(updated)
 
+        # Before tour dedupe, which measures distance: a coordless stop counts
+        # as farthest of all, so a calendar row at a known room would lose to
+        # every sibling that happened to come from Ticketmaster.
+        borrowed = await self.repository.backfill_venue_coordinates()
+        if borrowed:
+            logger.info("Borrowed venue coordinates for %d events", borrowed)
         deduped = await self.repository.dedupe_tour_events(
             self.settings.home_point, self.settings.max_travel_radius_miles
         )
         if deduped:
-            logger.info("Tour dedupe removed %d farther sibling events", deduped)
+            logger.info("Tour dedupe superseded %d farther sibling events", deduped)
         closer_pending = await self.repository.published_with_closer_pending(
             self.settings.home_point
         )

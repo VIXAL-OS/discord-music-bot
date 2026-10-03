@@ -89,6 +89,32 @@ _US_STATE_CODES = frozenset(
 _VENUE_SPELLING = {"theater": "theatre", "centre": "center"}
 
 
+# Where a title's headliner ends: punctuation that opens a support list, tour
+# name or venue, a spaced dash/slash/joiner, or a connective word. Unspaced
+# dashes and slashes belong to names ("Jay-Z", "AC/DC").
+_BILL_SPLIT = re.compile(
+    r"\s*[,:;|@(\[]|\s+[-–—/+&]\s|\s+(?:w/|with|feat\.?|featuring|x|vs\.?)\s",
+    re.IGNORECASE,
+)
+# Only a tour-name suffix is cut from an artist field: "&" and "+" there are
+# usually part of the act's name ("Mumford & Sons", "Dan + Shay").
+_TOUR_SUFFIX_SPLIT = re.compile(r"\s*:|\s+[-–—]\s")
+
+
+def headliner_from_title(title: str | None) -> str:
+    """The normalized act a bill title leads with ("WINDHAND w/ Sonja" -> windhand)."""
+    if not title:
+        return ""
+    return normalize_text(_BILL_SPLIT.split(title, maxsplit=1)[0])
+
+
+def strip_tour_suffix(name: str | None) -> str:
+    """A normalized artist name without a tour name some sources glue onto it."""
+    if not name:
+        return ""
+    return normalize_text(_TOUR_SUFFIX_SPLIT.split(name, maxsplit=1)[0])
+
+
 def normalize_venue(value: str | None, aliases: Mapping[str, str] | None = None) -> str:
     """Normalize a venue name for identity comparison.
 

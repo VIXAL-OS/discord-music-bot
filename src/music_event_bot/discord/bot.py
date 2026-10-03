@@ -162,6 +162,7 @@ class MusicEventDiscordBot(commands.Bot):
         self._sync_complete = asyncio.Event()
         self._sync_error: Exception | None = None
         self._initial_cycle_task: asyncio.Task[None] | None = None
+        self._pipeline_lock = asyncio.Lock()
         self._register_commands()
 
     async def setup_hook(self) -> None:
@@ -190,8 +191,8 @@ class MusicEventDiscordBot(commands.Bot):
                 self._sync_complete.set()
             return
         self.scheduler.configure(
-            self.music_app.discovery.run,
-            self.sync_reviews,
+            self._discover_exclusively,
+            self._scheduled_review_sync,
             self.repository.expire_past_events,
             self.drain_publication_queue,
             self.remind_rsvps,
@@ -205,9 +206,31 @@ class MusicEventDiscordBot(commands.Bot):
         # failed startup discovery no longer also skips the review sync.
         await self.scheduler.run_discovery()
         try:
-            await self.sync_reviews()
+            await self._scheduled_review_sync()
         except Exception:
             logger.exception("Initial review sync failed")
+
+    async def _discover_exclusively(self) -> None:
+        # A review sync landing mid-discovery posted cards for rows the run was
+        # about to supersede (farther tour stops), and its writes competed with
+        # discovery's for the database -- the 2026-10-02 "database is locked"
+        # crash hit while a sync was running. One at a time.
+        async with self._pipeline_lock:
+            await self.music_app.discovery.run()
+
+    async def _scheduled_review_sync(self) -> int:
+        async with self._pipeline_lock:
+            # Approving one stop of a tour should retire its farther siblings
+            # within a sync cycle, not at the next morning's discovery run.
+            try:
+                superseded = await self.repository.dedupe_tour_events(
+                    self.settings.home_point, self.settings.max_travel_radius_miles
+                )
+                if superseded:
+                    logger.info("Superseded %d farther tour stops before syncing", superseded)
+            except Exception:
+                logger.exception("Tour dedupe before review sync failed")
+            return await self.sync_reviews()
 
     async def close(self) -> None:
         self.scheduler.shutdown()

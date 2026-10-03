@@ -359,6 +359,113 @@ async def test_decided_stop_anchors_tour_dedupe(repository, complete_event) -> N
 
 
 @pytest.mark.asyncio
+async def test_superseded_stops_do_not_come_back_on_the_next_run(
+    repository, complete_event
+) -> None:
+    """Deleting siblings let discovery re-insert them as new rows every night."""
+    near = _tour_stop(
+        complete_event, "mm-pgh", "Man Man at Mr Smalls", "Mr Smalls Theatre",
+        venue_latitude=40.50, venue_longitude=-79.96,
+    )
+    far = _tour_stop(
+        complete_event, "mm-cle", "Man Man at Grog Shop", "Grog Shop",
+        venue_latitude=41.50, venue_longitude=-81.58,
+    )
+    approved = (await repository.upsert_discovered(near, _ARTIST_MATCH_SCORE)).event
+    far_id = (await repository.upsert_discovered(far, _ARTIST_MATCH_SCORE)).event.id
+    await repository.approve(approved.id, 4)
+    assert await repository.dedupe_tour_events(_HOME, 350) == 1
+
+    # The next discovery run sees the same listing again.
+    again = await repository.upsert_discovered(far, _ARTIST_MATCH_SCORE)
+
+    assert again.created is False
+    assert again.event.id == far_id
+    assert again.event.status is EventStatus.SUPERSEDED
+    assert await repository.list_events(EventStatus.PENDING_REVIEW) == []
+    assert await repository.dedupe_tour_events(_HOME, 350) == 0
+
+
+@pytest.mark.asyncio
+async def test_title_only_calendar_row_joins_its_artists_tour(
+    repository, complete_event
+) -> None:
+    genre_score = ScoreResult(
+        score=15, reasons=("genre match: doom metal",), affinity_score=15,
+        location_bonus=0, distance_miles=None,
+    )
+    cleveland = _tour_stop(
+        complete_event, "wh-cle", "Windhand", "Grog Shop", artist="Windhand",
+        venue_latitude=41.50, venue_longitude=-81.58,
+    )
+    # Calendar rows carry a title and nothing else to say who is playing.
+    columbus = replace(
+        _tour_stop(
+            complete_event, "wh-cbus", "WINDHAND w/ Sonja", "Skully's Music Diner",
+            venue_latitude=39.99, venue_longitude=-83.01,
+        ),
+        artist=None,
+        artists=(),
+    )
+    party_a = replace(
+        _tour_stop(complete_event, "dr-1", "Dark Room w/ Erica Scary", "Side Quest",
+                   venue_latitude=40.47, venue_longitude=-79.96),
+        artist=None, artists=(),
+    )
+    party_b = replace(
+        _tour_stop(complete_event, "dr-2", "Dark Room w/ Krass Advert", "Spirit",
+                   venue_latitude=40.48, venue_longitude=-79.95),
+        artist=None, artists=(),
+    )
+    anchor = (await repository.upsert_discovered(cleveland, genre_score)).event
+    for candidate in (columbus, party_a, party_b):
+        await repository.upsert_discovered(candidate, genre_score)
+    await repository.approve(anchor.id, 4)
+
+    assert await repository.dedupe_tour_events(_HOME, 350) == 1
+    remaining = {
+        event.title for event in await repository.list_events(EventStatus.PENDING_REVIEW)
+    }
+    # Two local parties sharing a series name are not one tour.
+    assert remaining == {"Dark Room w/ Erica Scary", "Dark Room w/ Krass Advert"}
+
+
+@pytest.mark.asyncio
+async def test_coordless_events_borrow_coordinates_from_the_same_room(
+    repository, complete_event
+) -> None:
+    ticketmaster = replace(
+        complete_event, source_event_id="sk-tm", title="Some Band", artist="Some Band",
+        venue="Skully's Music-Diner",
+        location="1151 North High Street, Columbus, OH, 43201, US",
+        venue_latitude=39.985866, venue_longitude=-83.005629,
+    )
+    calendar = replace(
+        complete_event, source_event_id="sk-ics", title="King Buffalo", artist=None,
+        venue="Skully's Music Diner",
+        location="Skully's Music Diner, 1151 N High St, Columbus, OH 43201",
+    )
+    pittsburgh_spirit = replace(
+        complete_event, source_event_id="sp-pgh", title="Pittsburgh Night",
+        venue="Spirit", location="Spirit, 242 51st St, Pittsburgh, PA 15201",
+        venue_latitude=40.48, venue_longitude=-79.95,
+    )
+    # Same venue name, different city: must not borrow Pittsburgh's coordinates.
+    other_spirit = replace(
+        complete_event, source_event_id="sp-elsewhere", title="Elsewhere Night",
+        venue="Spirit", location="Spirit, 12 Main St, Lansing, MI 48933",
+    )
+    for event in (ticketmaster, calendar, pittsburgh_spirit, other_spirit):
+        await repository.upsert_discovered(event, _ARTIST_MATCH_SCORE)
+
+    assert await repository.backfill_venue_coordinates() == 1
+    by_title = {event.title: event for event in await repository.list_events()}
+    assert by_title["King Buffalo"].venue_latitude == pytest.approx(39.985866)
+    assert by_title["King Buffalo"].venue_longitude == pytest.approx(-83.005629)
+    assert by_title["Elsewhere Night"].venue_latitude is None
+
+
+@pytest.mark.asyncio
 async def test_published_with_closer_pending_flags_the_mistake(
     repository, complete_event
 ) -> None:
