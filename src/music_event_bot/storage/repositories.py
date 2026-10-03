@@ -1563,6 +1563,35 @@ class EventRepository:
                 grouped.setdefault(int(row["user_id"]), set()).add(str(row["value"]))
         return grouped
 
+    async def followed_genres(
+        self, buckets: frozenset[str]
+    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """Specific genres members follow, each with its followers' names.
+
+        They share the "genre" taste rows with the role buckets (the table's
+        CHECK constraint allows no other kind); anything that is not a bucket
+        is a genre the member followed by name. Only members who still take
+        alerts count: someone who switched delivery off should not be pulling
+        shows into the review queue.
+        """
+        followers: dict[str, set[str]] = {}
+        async with self.database.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT t.value, COALESCE(p.display_name, t.user_id) AS name
+                FROM user_taste t JOIN user_profiles p ON p.user_id = t.user_id
+                WHERE t.kind = 'genre' AND t.weight > 0 AND p.delivery != 'off'
+                """
+            )
+            for row in await cursor.fetchall():
+                if str(row["value"]) in buckets:
+                    continue
+                followers.setdefault(str(row["value"]), set()).add(str(row["name"]))
+        return tuple(
+            (genre, tuple(sorted(names, key=str.casefold)))
+            for genre, names in sorted(followers.items())
+        )
+
     async def list_user_taste_weighted(self, kind: str) -> dict[int, dict[str, int]]:
         """Every member's values for one kind, weights included.
 

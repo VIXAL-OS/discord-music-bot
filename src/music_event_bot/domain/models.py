@@ -67,6 +67,10 @@ class TasteProfile:
     # Negative evidence: headliners whose genre-matched events the reviewer
     # rejected (and never approved). Their future events score lower.
     demoted_artists: tuple[str, ...] = ()
+    # Specific genres members follow for themselves via /me genre, each with
+    # the display names of its followers. Not the curator's taste, so they add
+    # no affinity: a match only earns a labelled pass into the review queue.
+    followed_genres: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

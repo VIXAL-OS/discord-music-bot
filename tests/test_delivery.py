@@ -102,6 +102,29 @@ def test_delivery_off_matches_nothing() -> None:
     assert match_users(_event(), (_GOTH_ROLE,), _profiles(delivery="off")) == ()
 
 
+def test_a_followed_genre_matches_without_holding_its_role() -> None:
+    """Someone following emo hears about emo shows even outside the Punk role."""
+    from dataclasses import replace
+
+    row = {
+        "display_name": "Avery",
+        "metro": "pittsburgh",
+        "travel_band": "road-trip",
+        "daily_ping_cap": 5,
+        "delivery": "mention",
+    }
+    profiles = build_profiles(
+        {1: row},
+        {1: {"goth", "emo"}},
+        {"goth": _GOTH_ROLE, "punk": _PUNK_ROLE},
+    )
+    emo_show = replace(_event(), genres=("emo", "midwest emo"))
+
+    assert [m.user_id for m in match_users(emo_show, (_PUNK_ROLE,), profiles)] == [1]
+    # Not a blanket pass: a punk show not tagged emo still needs the role.
+    assert match_users(replace(_event(), genres=("punk",)), (_PUNK_ROLE,), profiles) == ()
+
+
 def _sequence(count: int, day: int = 20) -> list[tuple[datetime, tuple[UserMatch, ...]]]:
     return [
         (

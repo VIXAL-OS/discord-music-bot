@@ -23,7 +23,7 @@ from music_event_bot.domain.geography import GeoPoint, haversine_miles
 from music_event_bot.domain.metros import metro as lookup_metro
 from music_event_bot.domain.metros import travel_band as lookup_travel_band
 from music_event_bot.domain.models import EventRecord, TasteProfile
-from music_event_bot.domain.normalization import normalize_text
+from music_event_bot.domain.normalization import normalize_genre, normalize_text
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.storage.repositories import EventRepository
 
@@ -86,6 +86,10 @@ class UserProfile:
     artists: tuple[str, ...] = ()
     demoted_artists: tuple[str, ...] = ()
     venues: tuple[str, ...] = ()
+    # Specific genres the member follows ("emo"). Finer than a bucket, so they
+    # match an event tagged with that genre even when the member does not hold
+    # the role it routes to -- they are why the show reached review at all.
+    followed_genres: frozenset[str] = frozenset()
 
     @property
     def home(self) -> GeoPoint:
@@ -173,6 +177,11 @@ def build_profiles(
                     if weight > 0
                 )
             ),
+            followed_genres=frozenset(
+                normalize_genre(genre)
+                for genre in genres_by_user.get(user_id, set())
+                if genre not in bucket_roles
+            ),
         )
     return profiles
 
@@ -193,12 +202,17 @@ def match_users(
     than of the event.
     """
     wanted = frozenset(event_role_ids)
+    event_genres = frozenset(normalize_genre(genre) for genre in event.genres)
     matches: list[UserMatch] = []
     for profile in profiles.values():
         if profile.delivery == "off":
             continue
         firehose = profile.delivery == "firehose"
-        if not firehose and not (wanted & profile.role_ids):
+        if (
+            not firehose
+            and not (wanted & profile.role_ids)
+            and not (event_genres & profile.followed_genres)
+        ):
             continue
         distance: float | None = None
         within = True

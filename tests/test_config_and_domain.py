@@ -362,6 +362,22 @@ def test_title_fallback_demotion_only_docks_the_headliner(
     assert any("previously rejected" in reason for reason in result.reasons) is docked
 
 
+def test_member_followed_genre_is_labelled_but_not_scored() -> None:
+    profile = TasteProfile(
+        genres=("death doom",),
+        followed_genres=(("emo", ("Bo", "avery")), ("screamo", ("Cal",))),
+    )
+    event = DiscoveredEvent(
+        source_name="test",
+        source_event_id="followed-1",
+        title="Spanish Love Songs",
+        genres=("emo", "heartland punk"),
+    )
+    result = score_event(event, profile)
+    assert result.affinity_score == 0
+    assert result.reasons == ("followed by members: emo (avery, Bo)",)
+
+
 def test_genre_alias_spellings_count_once() -> None:
     event = DiscoveredEvent(
         source_name="test",

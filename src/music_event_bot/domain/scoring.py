@@ -22,6 +22,9 @@ _TRIBUTE_MARKERS = (
 )
 _LOCAL_TRIBUTE_MILES = 40
 
+# Reason prefix for a genre members follow; the discovery gate keys on it.
+FOLLOWED_BY_MEMBERS = "followed by members: "
+
 # What may follow the headliner in a bill title: punctuation that starts a
 # support list, tour name or venue ("Distant: Into Despair Tour", "Oso Oso,
 # Leisure Hour", "Knox @ KEMBA Live!"), a connective word, or the end. Dashes,
@@ -158,6 +161,21 @@ def score_event(
     if weak_matches:
         affinity_score += min(10, 5 * len(weak_matches))
         reasons.append(f"related genre match: {', '.join(weak_matches)}")
+
+    # Genres members follow themselves ("my friends love emo"). Labelled, never
+    # scored: the curator's ranking stays the curator's, and the gate reads
+    # this reason to let the show into review anyway.
+    followed: list[str] = []
+    followers: set[str] = set()
+    for genre, names in profile.followed_genres:
+        if normalize_genre(genre) in event_genres:
+            followed.append(genre)
+            followers.update(names)
+    if followed:
+        reasons.append(
+            f"{FOLLOWED_BY_MEMBERS}{', '.join(sorted(followed))} "
+            f"({', '.join(sorted(followers, key=str.casefold))})"
+        )
 
     # A pinned venue is corroboration, not a ticket in: 10 points cannot pass
     # the review gate without a matching artist or genre.

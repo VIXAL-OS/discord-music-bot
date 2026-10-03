@@ -30,7 +30,7 @@ from music_event_bot.domain.metros import (
     travel_band,
 )
 from music_event_bot.domain.models import EventRecord, EventStatus
-from music_event_bot.domain.normalization import normalize_text
+from music_event_bot.domain.normalization import normalize_genre, normalize_text
 from music_event_bot.domain.scoring import score_event
 from music_event_bot.services.profiles import GuildMember, bucket_genre_roles
 from music_event_bot.services.publishing import PublicationService
@@ -796,7 +796,11 @@ class MusicEventDiscordBot(commands.Bot):
             return "You have no alert profile yet."
         band = travel_band(str(profile["travel_band"]))
         taste = await self.repository.get_user_taste(user_id, "genre")
-        held = [value for value, weight in taste.items() if weight > 0]
+        buckets = self.settings.bucket_role_map
+        held = [value for value, weight in taste.items() if weight > 0 and value in buckets]
+        followed_genres = [
+            value for value, weight in taste.items() if weight > 0 and value not in buckets
+        ]
         dropped = [value for value, weight in taste.items() if weight <= 0]
         cap = int(profile["daily_ping_cap"])
         home_label = metro(str(profile["metro"])).label
@@ -815,6 +819,12 @@ class MusicEventDiscordBot(commands.Bot):
         ]
         if dropped:
             lines.append("- Dropped: " + ", ".join(dropped))
+        if followed_genres:
+            lines.append(
+                "- Specific genres: "
+                + ", ".join(followed_genres)
+                + " (shows tagged with these reach review even outside the curator's taste)"
+            )
         if followed:
             lines.append(
                 "- Following: "
@@ -837,13 +847,18 @@ class MusicEventDiscordBot(commands.Bot):
             "- `/me travel` — how far you will go: in town, day trip, or road trip",
             "- `/me cap` — most pings you want in one day",
             "- `/me delivery` — mention me on matches, on everything, or never",
-            "- `/me genre` — add or drop one of the genre buckets",
+            "- `/me genre` — add or drop a genre bucket, or follow a specific genre "
+            "(emo, screamo, death doom...)",
             "- `/me artist` — follow or unfollow an act",
             "",
             "Following an act does **not** widen what you match — the genre buckets still "
             "decide that. It reserves the tail of your daily cap for shows featuring acts "
             "you follow, so a busy day gives you the best few rather than the first few. "
             "Anything over your cap waits for the daily catch-up post instead of being lost.",
+            "",
+            "Following a **specific genre** is different: shows tagged with it get put in "
+            "front of the reviewer even when they are not the reviewer's own taste, so a "
+            "scene the server likes does not get filtered out before anyone sees it.",
         ]
         if self.settings.regional_announcement_channel_id is not None:
             lines += [
@@ -996,7 +1011,9 @@ class MusicEventDiscordBot(commands.Bot):
                 app_commands.Choice(name="Drop", value="drop"),
             ]
         )
-        @app_commands.describe(name="One of the genre buckets this server uses")
+        @app_commands.describe(
+            name="A genre bucket, or a specific genre to follow (emo, screamo...)"
+        )
         async def genre_command(
             interaction: discord.Interaction, action: app_commands.Choice[str], name: str
         ) -> None:
@@ -1004,19 +1021,41 @@ class MusicEventDiscordBot(commands.Bot):
             if member is None:
                 return
             chosen = normalize_text(name)
-            if chosen not in buckets:
+            if chosen in buckets:
+                await self.ensure_profile(member, create_if_empty=True)
+                # Dropping writes -1 rather than deleting the row: a negative
+                # weight is what stops a later seed run handing the genre back.
+                await self.repository.set_user_taste(
+                    member.id, "genre", chosen, 1 if action.value == "add" else -1
+                )
+                verb = "Added" if action.value == "add" else "Dropped"
+                await _respond(interaction, f"{verb} **{chosen}**.")
+                return
+            # Anything else is a specific genre the member follows ("emo"),
+            # which can bring shows into review the curator's own taste would
+            # not. Broad labels are refused: following "rock" would queue
+            # half of Ticketmaster.
+            followed = normalize_genre(chosen)
+            if len(followed) < 3 or followed in self.settings.umbrella_genre_set:
                 await interaction.response.send_message(
-                    f"`{name}` is not one of: " + ", ".join(buckets), ephemeral=True
+                    f"`{name}` is too broad to follow. Pick a bucket ("
+                    + ", ".join(buckets)
+                    + ") or a specific genre such as emo, screamo or death doom.",
+                    ephemeral=True,
                 )
                 return
             await self.ensure_profile(member, create_if_empty=True)
-            # Dropping writes -1 rather than deleting the row: a negative
-            # weight is what stops a later seed run handing the genre back.
             await self.repository.set_user_taste(
-                member.id, "genre", chosen, 1 if action.value == "add" else -1
+                member.id, "genre", followed, 1 if action.value == "add" else -1
             )
-            verb = "Added" if action.value == "add" else "Dropped"
-            await _respond(interaction, f"{verb} **{chosen}**.")
+            if action.value == "add":
+                note = (
+                    f"Following **{followed}**. Shows tagged {followed} now reach the "
+                    "review queue even when they are outside the curator's own taste."
+                )
+            else:
+                note = f"Stopped following **{followed}**."
+            await _respond(interaction, note)
 
         @group.command(name="artist", description="Follow or unfollow an act")
         @app_commands.choices(

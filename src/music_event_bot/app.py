@@ -59,6 +59,14 @@ class Application:
                 "Review history demotes %d previously rejected headliners",
                 len(demoted_artists),
             )
+        # Before the rescore below, which rebuilds every pending card's reasons:
+        # without these a restart would strip the "followed by members" label.
+        profile = replace(
+            profile,
+            followed_genres=await repository.followed_genres(
+                frozenset(settings.bucket_role_map)
+            ),
+        )
         aliases_added = await repository.seed_genre_role_aliases(settings.role_map)
         if aliases_added:
             logger.info("Seeded %d genre->role aliases from cached tag mappings", aliases_added)

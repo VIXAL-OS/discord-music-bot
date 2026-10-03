@@ -62,6 +62,9 @@ class RecordingRepository:
     async def backfill_venue_coordinates(self) -> int:
         return 0
 
+    async def followed_genres(self, *args: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return ()
+
     async def dedupe_tour_events(self, *args: Any) -> int:
         return 0
 
@@ -403,6 +406,50 @@ async def test_affinity_gate_applies_to_every_source() -> None:
         assert bool(curated_reasons) is not requires_affinity
 
 
+class _FollowingRepository(RecordingRepository):
+    async def followed_genres(self, *args: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return (("emo", ("Avery",)),)
+
+
+@pytest.mark.asyncio
+async def test_member_followed_genres_get_shows_into_review() -> None:
+    """Friends' genres pass the gate: from curated feeds anywhere, from bulk
+    sources only within the local radius."""
+    settings = Settings(_env_file=None)
+    home = settings.home_point
+
+    def emo_show(event_id: str, lat: float, lon: float) -> DiscoveredEvent:
+        return DiscoveredEvent(
+            source_name="fixture",
+            source_event_id=event_id,
+            title=f"Emo Band {event_id}",
+            genres=("emo",),
+            venue_latitude=lat,
+            venue_longitude=lon,
+        )
+
+    nearby = emo_show("near", home.latitude, home.longitude)
+    columbus = emo_show("columbus", 39.99, -83.01)  # ~160 mi, inside the 350 radius
+
+    stored: dict[bool, list[str]] = {}
+    for requires_affinity in (False, True):
+        repository = _FollowingRepository()
+        source = StaticSource(
+            "fixture", [nearby, columbus], requires_affinity=requires_affinity
+        )
+        orchestrator = DiscoveryOrchestrator(
+            settings, cast(EventRepository, repository), [source], TasteProfile()
+        )
+        await orchestrator.run()
+        stored[requires_affinity] = [event.source_event_id for event, _ in repository.upserts]
+        for _event, score in repository.upserts:
+            assert score.affinity_score == 0
+            assert any(r == "followed by members: emo (Avery)" for r in score.reasons)
+
+    assert stored[False] == ["near", "columbus"]  # curated: any distance
+    assert stored[True] == ["near"]  # bulk source: local only
+
+
 @pytest.mark.asyncio
 async def test_gated_curated_events_are_logged(caplog: pytest.LogCaptureFixture) -> None:
     """A show someone put on a curated feed must not vanish without a trace."""
@@ -494,6 +541,9 @@ class _ArtworkRepository:
 
     async def backfill_venue_coordinates(self) -> int:
         return 0
+
+    async def followed_genres(self, *args: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return ()
 
     async def dedupe_tour_events(self, *args: Any) -> int:
         return 0

@@ -18,7 +18,7 @@ from music_event_bot.domain.models import (
     TasteProfile,
 )
 from music_event_bot.domain.normalization import normalize_text, normalize_venue
-from music_event_bot.domain.scoring import score_event
+from music_event_bot.domain.scoring import FOLLOWED_BY_MEMBERS, score_event
 from music_event_bot.storage.repositories import EventRepository
 from music_event_bot.taste.event_genres import EventGenreClassifier
 
@@ -267,6 +267,14 @@ class DiscoveryOrchestrator:
         # by then the first event would already own it.
         pending_artwork: list[tuple[str, str]] = []
         needs_genres: list[EventRecord] = []
+        # Members change what they follow at any time; the profile was built
+        # at startup, so take the current list for this run.
+        self.profile = replace(
+            self.profile,
+            followed_genres=await self.repository.followed_genres(
+                frozenset(self.settings.bucket_role_map)
+            ),
+        )
 
         for source in self.sources:
             try:
@@ -320,7 +328,23 @@ class DiscoveryOrchestrator:
                 # review directly without going through discovery.
                 below_gate = score.affinity_score < self.settings.minimum_affinity_score
                 venue_trusted = below_gate and _is_trusted_venue(event.venue, trusted_venues)
-                if (below_gate and not venue_trusted) or (
+                # A genre members follow gets the show reviewed even though it
+                # is not the curator's taste. It keeps its low score, so it
+                # queues behind everything the curator would pick. Curated
+                # feeds qualify at any distance; the bulk sources only nearby,
+                # or one member following "emo" would queue every Ticketmaster
+                # emo show within 350 miles.
+                member_followed = (
+                    below_gate
+                    and any(reason.startswith(FOLLOWED_BY_MEMBERS) for reason in score.reasons)
+                    and (
+                        curated
+                        or _within_travel_radius(
+                            event, self.settings.home_point, self.settings.local_radius_miles
+                        )
+                    )
+                )
+                if (below_gate and not venue_trusted and not member_followed) or (
                     score.score < self.settings.minimum_match_score
                 ):
                     ignored += 1

@@ -431,6 +431,26 @@ async def test_title_only_calendar_row_joins_its_artists_tour(
 
 
 @pytest.mark.asyncio
+async def test_followed_genres_skip_members_with_delivery_off(repository) -> None:
+    for user_id, name in ((1, "Avery"), (2, "Bo"), (3, "Cal")):
+        await repository.upsert_user_profile(
+            user_id, display_name=name, metro="pittsburgh", travel_band="road-trip",
+            daily_ping_cap=5, source="test",
+        )
+    await repository.update_user_profile(3, delivery="off")
+    await repository.set_user_taste(1, "genre", "emo", 1)
+    await repository.set_user_taste(2, "genre", "emo", 1)
+    await repository.set_user_taste(2, "genre", "screamo", -1)  # unfollowed
+    await repository.set_user_taste(3, "genre", "skramz", 1)  # alerts off
+    # A role bucket is held, not followed by name.
+    await repository.set_user_taste(1, "genre", "punk", 1)
+
+    assert await repository.followed_genres(frozenset({"punk", "metal"})) == (
+        ("emo", ("Avery", "Bo")),
+    )
+
+
+@pytest.mark.asyncio
 async def test_coordless_events_borrow_coordinates_from_the_same_room(
     repository, complete_event
 ) -> None:
