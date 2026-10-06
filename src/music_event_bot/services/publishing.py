@@ -10,7 +10,9 @@ from zoneinfo import ZoneInfo
 
 from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.geography import GeoPoint, haversine_miles
+from music_event_bot.domain.metros import METROS
 from music_event_bot.domain.models import EventRecord, EventStatus
+from music_event_bot.domain.venues import address_city_state
 from music_event_bot.services.delivery import (
     UserMatch,
     build_profiles,
@@ -72,6 +74,7 @@ class PublicationService:
         regional_announcement_channel_id: int | None = None,
         home: GeoPoint | None = None,
         local_radius_miles: int = 0,
+        local_states: frozenset[str] | None = None,
         personal_delivery: str = "off",
         bucket_roles: dict[str, int] | None = None,
         timezone: ZoneInfo | None = None,
@@ -89,6 +92,9 @@ class PublicationService:
         self.regional_channel_id = regional_announcement_channel_id
         self.home = home
         self.local_radius_miles = local_radius_miles
+        # States with some ground inside local_radius_miles. None skips the
+        # state test, leaving only the metro roster to judge coordless venues.
+        self.local_states = local_states
         # Shadow mode: work out the per-user mention list and log it without
         # sending it, so the flip can be measured against a week of real
         # announcements before anyone's notifications change.
@@ -215,14 +221,33 @@ class PublicationService:
         if self.regional_channel_id is None or self.home is None or self.local_radius_miles <= 0:
             return False
         if event.venue_latitude is None or event.venue_longitude is None:
-            # An address the book does not cover is far likelier to be a DIY
-            # room in town than a show four states away, and burying a local
-            # show is a worse failure than announcing a distant one.
-            return False
+            return self._address_is_distant(event.location)
         distance = haversine_miles(
             self.home, GeoPoint(event.venue_latitude, event.venue_longitude)
         )
         return distance > self.local_radius_miles
+
+    def _address_is_distant(self, location: str | None) -> bool:
+        """Judge a coordless venue by the town and state in its address.
+
+        Only Ticketmaster supplies coordinates, and borrowing them needs
+        another event at the same room, so a one-off out-of-town show (Black
+        Circle, Indianapolis) arrived with none and went to the main channel
+        with role pings. A town in the metro roster is measured from its
+        center; otherwise a state with no ground inside the radius is
+        distant. Anything else stays local, including an address naming no
+        state: a DIY room the address book does not cover is far likelier to
+        be in town, and burying a local show is worse than announcing a
+        distant one.
+        """
+        assert self.home is not None
+        city, state = address_city_state(location)
+        if state is None:
+            return False
+        for metro in METROS:
+            if city == metro.label.casefold():
+                return haversine_miles(self.home, metro.center) > self.local_radius_miles
+        return self.local_states is not None and state not in self.local_states
 
     async def _routing_for(
         self, event: EventRecord, *, channel_id: int | None = None

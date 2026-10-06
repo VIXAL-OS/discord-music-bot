@@ -141,7 +141,8 @@ Every setting uses the `MUSICBOT_` prefix. See `.env.example` for the full list.
 | `MUSICBOT_REVIEW_CHANNEL_ID` | Private moderator/reviewer channel |
 | `MUSICBOT_ANNOUNCEMENT_CHANNEL_ID` | Public event announcement channel |
 | `MUSICBOT_REGIONAL_ANNOUNCEMENT_CHANNEL_ID` | Optional second channel for shows beyond `MUSICBOT_LOCAL_RADIUS_MILES`, posted there with no role ping. Blank = one channel for everything |
-| `MUSICBOT_LOCAL_RADIUS_MILES` | Local/regional boundary in miles (default 75). Venues with no coordinates count as local |
+| `MUSICBOT_LOCAL_RADIUS_MILES` | Local/regional boundary in miles (default 75). Venues with no coordinates are judged by their address: a town in the metro roster by its distance, otherwise a state outside `MUSICBOT_LOCAL_STATES` is regional, and anything else counts as local |
+| `MUSICBOT_LOCAL_STATES` | Postal codes of the states with any ground inside the local radius (default `PA,OH,WV,MD`). Widen it if you widen the radius |
 | `MUSICBOT_PERSONAL_DELIVERY` | Per-user delivery rollout: `off` (role pings), `shadow` (log what per-user mentions would send), `on` (mentions replace role pings). Default `off` |
 | `MUSICBOT_DEFAULT_DAILY_PING_CAP` | Ping budget a seeded profile starts with (default 5); overflow queues for the daily catch-up post |
 | `MUSICBOT_RESERVED_PING_SLOTS` | Tail of each daily cap reserved for shows featuring an act the member follows (default 2); 0 disables it |

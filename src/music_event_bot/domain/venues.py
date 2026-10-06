@@ -108,6 +108,15 @@ def _locality(location: str | None) -> tuple[str | None, str | None]:
     return None, None
 
 
+def address_city_state(location: str | None) -> tuple[str | None, str | None]:
+    """(casefolded city, state code) read off an address, either None when absent."""
+    locality, _ = _locality(location)
+    if locality is None:
+        return None, None
+    city, state = locality.split("|", 1)
+    return city or None, state
+
+
 def same_locality(first: str | None, second: str | None) -> bool:
     """True when two addresses provably name the same town.
 

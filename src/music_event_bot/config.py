@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # likely to be in town than four states away, and hiding it is worse
     # than announcing it.
     local_radius_miles: int = 75
+    # States with any ground inside local_radius_miles of home, as postal
+    # codes. A venue with no coordinates whose address names another state
+    # (Indianapolis, IN) is treated as regional. Widen this with the radius.
+    local_states: str = "PA,OH,WV,MD"
     # Rollout lever for per-user delivery. "off" is today's behaviour: events
     # ping the genre roles they map to. "shadow" additionally computes the
     # per-user mention list and logs what it would have sent, changing
@@ -312,6 +316,10 @@ class Settings(BaseSettings):
         return tuple(
             fragment for value in _csv(self.trusted_venues) if (fragment := normalize_text(value))
         )
+
+    @property
+    def local_state_codes(self) -> frozenset[str]:
+        return frozenset(code.upper() for code in _csv(self.local_states))
 
     @property
     def calendar_urls(self) -> tuple[str, ...]:

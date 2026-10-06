@@ -506,7 +506,9 @@ def _split_service(repository, gateway, **kwargs) -> PublicationService:
     )
 
 
-async def _approved_at(repository, complete_event, coords, suffix: str) -> EventRecord:
+async def _approved_at(
+    repository, complete_event, coords, suffix: str, location: str | None = None
+) -> EventRecord:
     latitude, longitude = coords if coords else (None, None)
     return await _approved_event(
         repository,
@@ -514,6 +516,7 @@ async def _approved_at(repository, complete_event, coords, suffix: str) -> Event
             complete_event,
             source_event_id=f"geo-{suffix}",
             title=f"Show {suffix}",
+            location=location or complete_event.location,
             venue_latitude=latitude,
             venue_longitude=longitude,
         ),
@@ -557,7 +560,9 @@ async def test_show_without_coordinates_is_treated_as_local(
 ) -> None:
     """A DIY room the address book does not cover is likelier to be in town
     than four states away, and burying a local show is the worse failure."""
-    event = await _approved_at(repository, complete_event, None, "unmapped")
+    event = await _approved_at(
+        repository, complete_event, None, "unmapped", location="Basement, 12 Some St"
+    )
     await repository.seed_genre_roles({"indie rock": 1})
     gateway = FakePublicationGateway()
 
@@ -565,6 +570,34 @@ async def test_show_without_coordinates_is_treated_as_local(
 
     assert gateway.announcement_calls == [(event.id, (1,), 7001)]
     assert gateway.announcement_channels == [_MAIN_CHANNEL]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("location", "channel"),
+    [
+        # A one-off release show the calendar added; no Ticketmaster row at
+        # Black Circle to borrow coordinates from.
+        ("Black Circle, 2201 E 46th St, Indianapolis, IN 46205", _REGIONAL_CHANNEL),
+        # Inside a local state, but a roster metro past the radius.
+        ("Skully's Music-Diner, 1151 N High St, Columbus, OH 43201", _REGIONAL_CHANNEL),
+        # Inside a local state and not in the roster: Wheeling is ~50 mi out.
+        ("The Ruby Room, 1 Main St, Wheeling, WV 26003", _MAIN_CHANNEL),
+        # A roster metro inside the radius.
+        ("Gooskis, 3117 Brereton St, Pittsburgh, PA 15219", _MAIN_CHANNEL),
+    ],
+)
+async def test_show_without_coordinates_is_routed_by_its_address(
+    repository, complete_event, location, channel
+) -> None:
+    event = await _approved_at(repository, complete_event, None, "addressed", location=location)
+    gateway = FakePublicationGateway()
+
+    await _split_service(
+        repository, gateway, local_states=frozenset({"PA", "OH", "WV", "MD"})
+    ).publish(event.id)
+
+    assert gateway.announcement_channels == [channel]
 
 
 @pytest.mark.asyncio

@@ -145,6 +145,7 @@ class MusicEventDiscordBot(commands.Bot):
             regional_announcement_channel_id=self.settings.regional_announcement_channel_id,
             home=self.settings.home_point,
             local_radius_miles=self.settings.local_radius_miles,
+            local_states=self.settings.local_state_codes,
             personal_delivery=self.settings.personal_delivery,
             bucket_roles=self.settings.bucket_role_map,
             timezone=self.settings.timezone,
