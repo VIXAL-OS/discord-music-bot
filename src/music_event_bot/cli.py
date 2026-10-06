@@ -94,6 +94,25 @@ def _parser() -> argparse.ArgumentParser:
         metavar="YYYY-MM-DD",
         help="Only events on this local calendar night at the venue's own timezone",
     )
+    submit_parser = subparsers.add_parser(
+        "submit",
+        help="Queue one event straight into review, bypassing the taste gate "
+        "(the command-line twin of /event submit)",
+    )
+    submit_parser.add_argument("--title", required=True)
+    submit_parser.add_argument(
+        "--start", help="Start time, e.g. '2026-10-10 19:00' (local time unless an offset is given)"
+    )
+    submit_parser.add_argument("--venue")
+    submit_parser.add_argument(
+        "--location", help="Full address; the bot reads the venue's town and state from it"
+    )
+    submit_parser.add_argument("--url", help="Source or ticket URL")
+    submit_parser.add_argument("--artist")
+    submit_parser.add_argument(
+        "--genre", action="append", help="Genre for role matching; repeat for several"
+    )
+    submit_parser.add_argument("--description")
     subparsers.add_parser("scrape-once", help="Run all enabled discovery sources once")
     backfill_parser = subparsers.add_parser(
         "backfill-artwork",
@@ -265,6 +284,54 @@ async def _run(args: argparse.Namespace) -> None:
             *statuses, venue=args.venue, on_date=args.on_date
         )
         print(json.dumps([asdict(event) for event in events], indent=2, default=str))
+        return
+    if args.command == "submit":
+        from dataclasses import replace
+
+        from dateutil.parser import parse as parse_datetime
+
+        from music_event_bot.discovery.manual import manual_event
+        from music_event_bot.domain.scoring import score_event
+
+        starts_at = None
+        if args.start:
+            starts_at = parse_datetime(args.start)
+            if starts_at.tzinfo is None:
+                starts_at = starts_at.replace(tzinfo=settings.timezone)
+        candidate = manual_event(
+            title=args.title,
+            starts_at=starts_at,
+            venue=args.venue,
+            location=args.location,
+            source_url=args.url,
+            artist=args.artist,
+            description=args.description,
+            duration_minutes=settings.default_event_duration_minutes,
+        )
+        if args.genre:
+            candidate = replace(candidate, genres=tuple(args.genre))
+        # Scored only so the card shows its reasons and sorts sensibly; like
+        # /event submit, a manual row reaches review whatever the score. The
+        # running bot posts the card on its next review sync.
+        score = score_event(
+            candidate,
+            app.profile,
+            home=settings.home_point,
+            max_travel_radius_miles=settings.max_travel_radius_miles,
+        )
+        score = replace(score, reasons=(*score.reasons, "submitted from the command line"))
+        result = await app.repository.upsert_discovered(candidate, score)
+        print(
+            json.dumps(
+                {
+                    "id": result.event.id,
+                    "title": result.event.title,
+                    "status": result.event.status.value,
+                    "created": result.created,
+                },
+                indent=2,
+            )
+        )
         return
     if args.command == "scrape-once":
         summary = await app.discovery.run()
