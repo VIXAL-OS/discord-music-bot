@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     # {"poetrymillvale.com": "Poetry Lounge, 313 North Avenue, Millvale, PA"}
     # The venue name is taken from the text before the first comma.
     feed_venue_defaults: str = "{}"
+    # Comma-separated feed URL fragments whose titles are hand-typed flyers
+    # ("OCTOBER 30TH SECOND SKIN 9PM/$10"). Their titles lose the date, time
+    # and price and are de-capitalised, and a "7PM" stored as 07:00 is moved
+    # to 19:00. Opt-in: elsewhere capitals are the band's own spelling.
+    feed_title_cleanup: str = ""
     # Title-fragment -> "Venue, address" fills for events whose source omits
     # the venue (secret-location parties, series names). Matched word-bounded
     # against the normalized event title.
@@ -332,6 +337,10 @@ class Settings(BaseSettings):
     @property
     def squarespace_event_urls(self) -> tuple[str, ...]:
         return _csv(self.squarespace_urls)
+
+    @property
+    def feed_title_cleanup_fragments(self) -> tuple[str, ...]:
+        return tuple(fragment.casefold() for fragment in _csv(self.feed_title_cleanup))
 
     @property
     def feed_venue_default_map(self) -> dict[str, str]:

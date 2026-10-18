@@ -16,6 +16,7 @@ from dateutil.parser import parse as parse_datetime
 from icalendar import Calendar
 
 from music_event_bot.discovery.base import DiscoveryWindow
+from music_event_bot.discovery.listing_titles import clean_listing_title, correct_meridiem
 from music_event_bot.domain.models import DiscoveredEvent
 
 logger = logging.getLogger(__name__)
@@ -74,10 +75,12 @@ class CalendarSource:
         urls: tuple[str, ...],
         client: httpx.AsyncClient | None = None,
         venue_defaults: dict[str, str] | None = None,
+        title_cleanup: tuple[str, ...] = (),
     ) -> None:
         self.urls = urls
         self._client = client
         self.venue_defaults = venue_defaults or {}
+        self.title_cleanup = title_cleanup
 
     async def discover(self, window: DiscoveryWindow) -> list[DiscoveredEvent]:
         owned_client = self._client is None
@@ -131,6 +134,12 @@ class CalendarSource:
         ends_at, _ = _ical_datetime(component.get("DTEND"), window)
         if starts_at and ends_at is None:
             ends_at = starts_at + timedelta(minutes=window.default_event_duration_minutes)
+        if self._cleans_titles(source_url):
+            corrected = correct_meridiem(starts_at, title)
+            if corrected and starts_at and ends_at and corrected != starts_at:
+                ends_at += corrected - starts_at
+            starts_at = corrected
+            title = clean_listing_title(title)
         if ends_at and starts_at and ends_at <= starts_at:
             ends_at = starts_at + timedelta(minutes=window.default_event_duration_minutes)
 
@@ -178,6 +187,10 @@ class CalendarSource:
             raw={"uid": uid, "source_calendar": source_url},
             incomplete_reasons=tuple(dict.fromkeys(incomplete)),
         )
+
+    def _cleans_titles(self, source_url: str) -> bool:
+        url_folded = source_url.casefold()
+        return any(fragment in url_folded for fragment in self.title_cleanup)
 
 
 _GENRES_LINE_RE = re.compile(r"(?im)^\s*genres?\s*:\s*(.+)$")

@@ -277,3 +277,43 @@ async def test_calendar_decodes_html_entities_left_by_the_producer(
     assert event.venue == "Gooski's"
     assert "&amp;" not in event.title
     assert "&#39;" not in (event.venue or "")
+
+
+_FLYER_ICS = (
+    b"BEGIN:VCALENDAR\r\n"
+    b"VERSION:2.0\r\n"
+    b"PRODID:-//Event Organiser//EN\r\n"
+    b"BEGIN:VEVENT\r\n"
+    b"UID:flyer-1\r\n"
+    b"SUMMARY:JULY 11TH 7PM DRUSKY PRESENTS: THE KNOW HARD FEELINGS TOUR W/ AITA/ ALTARBOY\r\n"
+    b"DTSTART;TZID=America/New_York:20260711T070000\r\n"
+    b"DTEND;TZID=America/New_York:20260711T110000\r\n"
+    b"END:VEVENT\r\n"
+    b"END:VCALENDAR\r\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_flyer_titles_are_cleaned_only_for_opted_in_feeds(
+    discovery_window, tmp_path: Path
+) -> None:
+    """Brillobox types the whole flyer into SUMMARY, and stored this 7PM as 07:00."""
+    local = tmp_path / "brillobox.ics"
+    local.write_bytes(_FLYER_ICS)
+    cleaned = await CalendarSource(
+        (str(local),),
+        venue_defaults={"brillobox.ics": "Brillobox, 4104 Penn Avenue, Pittsburgh, PA 15224"},
+        title_cleanup=("brillobox.ics",),
+    ).discover(discovery_window)
+
+    assert len(cleaned) == 1
+    event = cleaned[0]
+    assert event.title == "Drusky Presents: The Know Hard Feelings Tour w/ Aita / Altarboy"
+    assert event.starts_at is not None and event.ends_at is not None
+    assert (event.starts_at.hour, event.ends_at.hour) == (19, 23)
+    assert event.venue == "Brillobox"
+
+    # Feeds that did not opt in keep their titles and times exactly.
+    untouched = await CalendarSource((str(local),)).discover(discovery_window)
+    assert untouched[0].title.startswith("JULY 11TH 7PM DRUSKY")
+    assert untouched[0].starts_at is not None and untouched[0].starts_at.hour == 7

@@ -84,7 +84,9 @@ class Application:
         if settings.calendar_urls:
             sources.append(
                 CalendarSource(
-                    settings.calendar_urls, venue_defaults=settings.feed_venue_default_map
+                    settings.calendar_urls,
+                    venue_defaults=settings.feed_venue_default_map,
+                    title_cleanup=settings.feed_title_cleanup_fragments,
                 )
             )
         if settings.feed_urls:
