@@ -30,6 +30,8 @@ class FakePublicationGateway:
         self.announcement_users: list[tuple[int, ...]] = []
         self.update_users: list[tuple[int, ...]] = []
         self.announcement_error: Exception | None = None
+        self.remove_calls: list[tuple[int | None, int | None, int | None]] = []
+        self.remove_error: Exception | None = None
 
     async def create_or_find_scheduled_event(self, event: EventRecord) -> int:
         self.scheduled_calls.append(event.id)
@@ -64,6 +66,20 @@ class FakePublicationGateway:
         )
         self.update_channels.append(channel_id)
         self.update_users.append(user_ids)
+
+    async def remove_published_event(
+        self,
+        scheduled_event_id: int | None,
+        announcement_message_id: int | None,
+        channel_id: int | None = None,
+    ) -> dict[str, bool]:
+        self.remove_calls.append((scheduled_event_id, announcement_message_id, channel_id))
+        if self.remove_error is not None:
+            raise self.remove_error
+        return {
+            "announcement_deleted": announcement_message_id is not None,
+            "scheduled_event_deleted": scheduled_event_id is not None,
+        }
 
 
 async def _approved_event(repository, complete_event) -> EventRecord:
@@ -483,6 +499,58 @@ async def test_retract_refuses_an_event_still_in_review(repository, complete_eve
     )
     with pytest.raises(ValueError, match="not approved/published"):
         await repository.retract(stored.event.id, reviewer_id=42, reason="wrong tool")
+
+
+@pytest.mark.asyncio
+async def test_service_retract_takes_down_announcement_and_scheduled_event(
+    repository, complete_event
+) -> None:
+    approved = await _approved_event(repository, complete_event)
+    gateway = FakePublicationGateway()
+    service = PublicationService(repository, gateway, announcement_channel_id=_MAIN_CHANNEL)
+    await service.publish(approved.id)
+
+    removed = await service.retract(approved.id, reviewer_id=42, reason="tribute act")
+
+    assert removed == {"announcement_deleted": True, "scheduled_event_deleted": True}
+    assert gateway.remove_calls == [(7001, 8001, _MAIN_CHANNEL)]
+    stored = await repository.get_event(approved.id)
+    assert stored is not None
+    assert stored.status is EventStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_service_retract_leaves_row_published_when_discord_fails(
+    repository, complete_event
+) -> None:
+    """A failed delete must stay re-runnable, not orphan a live announcement."""
+    approved = await _approved_event(repository, complete_event)
+    gateway = FakePublicationGateway()
+    service = PublicationService(repository, gateway)
+    await service.publish(approved.id)
+    gateway.remove_error = RuntimeError("Discord is down")
+
+    with pytest.raises(RuntimeError):
+        await service.retract(approved.id, reviewer_id=42, reason="tribute act")
+
+    stored = await repository.get_event(approved.id)
+    assert stored is not None
+    assert stored.status is EventStatus.PUBLISHED
+
+
+@pytest.mark.asyncio
+async def test_service_retract_refuses_an_event_still_in_review(
+    repository, complete_event
+) -> None:
+    stored = await repository.upsert_discovered(
+        complete_event, ScoreResult(score=10, reasons=())
+    )
+    gateway = FakePublicationGateway()
+    service = PublicationService(repository, gateway)
+
+    with pytest.raises(ValueError, match="only approved or published"):
+        await service.retract(stored.event.id, reviewer_id=42, reason="wrong tool")
+    assert gateway.remove_calls == []
 
 
 # Downtown Pittsburgh, matching the configured default home point.

@@ -61,6 +61,13 @@ class PublicationGateway(Protocol):
         user_ids: tuple[int, ...] = (),
     ) -> None: ...
 
+    async def remove_published_event(
+        self,
+        scheduled_event_id: int | None,
+        announcement_message_id: int | None,
+        channel_id: int | None = None,
+    ) -> dict[str, bool]: ...
+
 
 class PublicationService:
     def __init__(
@@ -412,3 +419,38 @@ class PublicationService:
                 routing.channel_id,
                 routing.user_ids,
             )
+
+    async def retract(
+        self, event_id: str, reviewer_id: int, reason: str | None = None
+    ) -> dict[str, bool]:
+        """Take a published show back down: announcement, scheduled event, row.
+
+        Discord goes first. If a delete fails for any reason other than the
+        thing already being gone, the row stays published so the command can
+        simply be re-run; flipping the row first would leave a live
+        announcement nothing points at any more. Calendar entries the curator
+        tasks wrote are outside the bot and still have to come down by hand.
+        """
+        async with self._locks[event_id]:
+            event = await self.repository.get_event(event_id)
+            if event is None:
+                raise KeyError(f"Unknown event ID: {event_id}")
+            if event.status not in {EventStatus.APPROVED, EventStatus.PUBLISHED}:
+                raise ValueError(
+                    f"Event is {event.status.value}; only approved or published "
+                    "events can be retracted"
+                )
+            removed = {"announcement_deleted": False, "scheduled_event_deleted": False}
+            publication = await self.repository.get_publication(event_id)
+            if publication is not None:
+                scheduled_id = publication.get("scheduled_event_id")
+                announcement_id = publication.get("announcement_message_id")
+                stored_channel = publication.get("announcement_channel_id")
+                if scheduled_id or announcement_id:
+                    removed = await self.gateway.remove_published_event(
+                        int(scheduled_id) if scheduled_id else None,
+                        int(announcement_id) if announcement_id else None,
+                        int(stored_channel) if stored_channel else self.announcement_channel_id,
+                    )
+            await self.repository.retract(event_id, reviewer_id, reason)
+            return removed

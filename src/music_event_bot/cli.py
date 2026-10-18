@@ -141,6 +141,20 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the content-type fetch; URL-level placeholder rules still apply",
     )
+    retract_parser = subparsers.add_parser(
+        "retract",
+        help="Take a published show down: deletes its announcement and scheduled "
+        "event, then marks it rejected",
+    )
+    retract_parser.add_argument("event_id", help="Event id from `events`")
+    retract_parser.add_argument(
+        "--reason", required=True, help="Recorded as the review decision's reason"
+    )
+    retract_parser.add_argument(
+        "--reviewer-id",
+        type=int,
+        help="Discord user id recorded as the decider (default: the lowest admin id)",
+    )
     dedupe_parser = subparsers.add_parser(
         "dedupe",
         help="Repair stale fingerprints and fold duplicate events together "
@@ -448,6 +462,43 @@ async def _run(args: argparse.Namespace) -> None:
             )
             result["announcement_updated"] = True
         print(json.dumps(result, indent=2, default=str))
+        return
+
+    if args.command == "retract":
+        event = await app.repository.get_event(args.event_id)
+        if event is None:
+            raise ValueError(f"No such event: {args.event_id}")
+        reviewer_id = args.reviewer_id
+        if reviewer_id is None:
+            if not settings.admins:
+                raise ValueError("Pass --reviewer-id; no MUSICBOT_ADMIN_USER_IDS are set")
+            reviewer_id = min(settings.admins)
+        settings.require_discord()
+        from music_event_bot.discord.bot import MusicEventDiscordBot
+
+        bot = MusicEventDiscordBot(app)
+        removed: dict[str, bool] = {}
+
+        async def _retract() -> None:
+            removed.update(
+                await bot.publication_service.retract(event.id, reviewer_id, args.reason)
+            )
+
+        await bot.run_once(_retract, "retraction")
+        print(
+            json.dumps(
+                {
+                    "event_id": event.id,
+                    "title": event.title,
+                    "previous_status": event.status.value,
+                    "status": EventStatus.REJECTED.value,
+                    **removed,
+                    "note": "Calendar entries written by the curator tasks are not "
+                    "touched; remove any by hand.",
+                },
+                indent=2,
+            )
+        )
         return
 
     if args.command == "delivery-report":

@@ -213,6 +213,34 @@ class DiscordPublicationGateway:
             view=RsvpView(self.bot, event.id),
         )
 
+    async def remove_published_event(
+        self,
+        scheduled_event_id: int | None,
+        announcement_message_id: int | None,
+        channel_id: int | None = None,
+    ) -> dict[str, bool]:
+        # Already gone counts as done: a moderator may have deleted the
+        # message by hand, and a re-run after a partial failure must not stall
+        # on the half that succeeded.
+        removed = {"announcement_deleted": False, "scheduled_event_deleted": False}
+        if announcement_message_id is not None:
+            channel = await self._announcement_channel(channel_id)
+            try:
+                message = await channel.fetch_message(announcement_message_id)
+                await message.delete()
+            except discord.NotFound:
+                pass
+            removed["announcement_deleted"] = True
+        if scheduled_event_id is not None:
+            guild = await self._guild()
+            try:
+                scheduled = await guild.fetch_scheduled_event(scheduled_event_id)
+                await scheduled.delete()
+            except discord.NotFound:
+                pass
+            removed["scheduled_event_deleted"] = True
+        return removed
+
     def _event_link(self, scheduled_event_id: int) -> str:
         return f"https://discord.com/events/{self.settings.discord_guild_id}/{scheduled_event_id}"
 
