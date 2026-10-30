@@ -67,12 +67,17 @@ class BotScheduler:
         post_catchup: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self._discover = discover
+        # APScheduler's default grace is one second, so a 3:17 run missed while
+        # the PC slept was dropped on wake ("was missed by 5:27:32") and the
+        # day went undiscovered -- 2026-10-23. No grace limit runs it late
+        # instead; coalesce keeps several missed days to one run.
         self.scheduler.add_job(
             self.run_discovery,
             CronTrigger.from_crontab(self.settings.discovery_cron, timezone=self.settings.timezone),
             id="discovery",
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=None,
             replace_existing=True,
         )
         self.scheduler.add_job(
@@ -92,6 +97,7 @@ class BotScheduler:
             id="expire-events",
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=None,
             replace_existing=True,
         )
         if drain_publications is not None:

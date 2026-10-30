@@ -52,3 +52,14 @@ async def test_successful_discovery_schedules_nothing() -> None:
 
     assert scheduler.scheduler.get_job("discovery-retry") is None
     assert scheduler.scheduler.get_job("discovery") is not None
+
+
+def test_discovery_missed_while_asleep_still_runs() -> None:
+    # The default one-second grace dropped the 3:17 run when the PC woke
+    # hours later; None means "run it late", and coalesce keeps it to one run.
+    scheduler = _scheduler(_noop)
+
+    for job_id in ("discovery", "expire-events"):
+        job = scheduler.scheduler.get_job(job_id)
+        assert job.misfire_grace_time is None
+        assert job.coalesce is True

@@ -15,6 +15,7 @@ from music_event_bot.config import Settings
 from music_event_bot.discovery.images import is_publishable_image
 from music_event_bot.domain.models import EventStatus
 from music_event_bot.services.dedupe import DEFAULT_WINDOW_MINUTES
+from music_event_bot.single_instance import acquire_instance_lock
 from music_event_bot.storage.database import Database
 from music_event_bot.taste.spotify import authorize_spotify
 
@@ -252,6 +253,15 @@ async def _run(args: argparse.Namespace) -> None:
             print("\nStore this value as MUSICBOT_SPOTIFY_REFRESH_TOKEN:\n")
             print(refresh_token)
         return
+
+    instance_lock = None
+    if args.command == "bot":
+        # Checked before Application.create, which migrates the database and
+        # imports Spotify history -- a duplicate should touch nothing.
+        instance_lock = acquire_instance_lock(settings.database_path.with_name("bot.lock"))
+        if instance_lock is None:
+            logging.getLogger(__name__).info("Another bot instance is already running; exiting")
+            return
 
     app = await Application.create(settings)
     if args.command == "health":
