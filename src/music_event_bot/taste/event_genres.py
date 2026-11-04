@@ -58,6 +58,9 @@ _AMBIGUOUS_ALONE = frozenset(
         "dance",
         "disco",
         "revival",
+        # Mostly a room rather than a sound: the "1924 Lounge" in a theatre's
+        # accessibility notes, or a venue spelled differently from its listing.
+        "lounge",
     }
 )
 
@@ -77,25 +80,64 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _LLM_BATCH_SIZE = 20
 
 
-def _phrases(text: str) -> set[str]:
-    """Every 1..4-word run in the text, normalized for vocabulary comparison."""
-    tokens = _TOKEN_RE.findall(normalize_text(text))
-    found: set[str] = set()
-    for size in range(1, _MAX_PHRASE_WORDS + 1):
+def _tokens(text: str | None) -> list[str]:
+    return _TOKEN_RE.findall(normalize_text(text))
+
+
+def _without_venue(tokens: list[str], venue: str | None) -> list[list[str]]:
+    """The stretches of text either side of any mention of the venue.
+
+    A listing saying "at Poetry Lounge" or "at House of Blues" is giving an
+    address, not a genre. Listings shorten venue names ("House of Blues" for
+    "House of Blues Cleveland"), so any run of two or more of the name's words
+    counts as a mention. A lone word only counts when it is the whole name, so
+    a metal show at "Metal Hall" can still say "metal".
+    """
+    name = _tokens(venue)
+    if name[:1] == ["the"] and len(name) > 1:
+        name = name[1:]
+    if not name:
+        return [tokens]
+    masked = [False] * len(tokens)
+    for size in range(len(name), min(2, len(name)) - 1, -1):
+        runs = {tuple(name[start : start + size]) for start in range(len(name) - size + 1)}
         for start in range(len(tokens) - size + 1):
-            found.add(" ".join(tokens[start : start + size]))
+            if tuple(tokens[start : start + size]) in runs:
+                masked[start : start + size] = [True] * size
+    segments: list[list[str]] = [[]]
+    for token, hidden in zip(tokens, masked, strict=True):
+        if hidden:
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return segments
+
+
+def _phrases(text: str, venue: str | None = None) -> set[str]:
+    """Every 1..4-word run in the text, normalized for vocabulary comparison."""
+    found: set[str] = set()
+    # Phrases stop at a removed venue name, so the words either side of it
+    # cannot join up into a genre neither of them named.
+    for tokens in _without_venue(_tokens(text), venue):
+        for size in range(1, _MAX_PHRASE_WORDS + 1):
+            for start in range(len(tokens) - size + 1):
+                found.add(" ".join(tokens[start : start + size]))
     return found
 
 
-def genres_in_text(text: str, vocabulary: tuple[str, ...]) -> tuple[str, ...]:
+def genres_in_text(
+    text: str, vocabulary: tuple[str, ...], venue: str | None = None
+) -> tuple[str, ...]:
     """Vocabulary genres named outright in the text, longest first.
 
     Longest-first so a listing that says "melodic death metal" is filed under
     that rather than under the "death metal" and "metal" also contained in it.
+    Mentions of the event's own venue are ignored, because a venue's name says
+    nothing about the bill.
     """
     if not text:
         return ()
-    present = _phrases(text)
+    present = _phrases(text, venue)
     matches = [
         genre
         for genre in vocabulary
@@ -175,9 +217,13 @@ class EventGenreClassifier:
         self._allowed = {normalize_text(genre): genre for genre in vocabulary}
         self._client = client
 
-    def from_text(self, title: str | None, description: str | None) -> tuple[str, ...]:
+    def from_text(
+        self, title: str | None, description: str | None, venue: str | None = None
+    ) -> tuple[str, ...]:
         """Pass one: genres the listing names outright. Free, no network."""
-        return genres_in_text(" ".join(filter(None, (title, description))), self.vocabulary)
+        return genres_in_text(
+            " ".join(filter(None, (title, description))), self.vocabulary, venue
+        )
 
     def _resolve_client(self) -> Any | None:
         if self._client is not None:

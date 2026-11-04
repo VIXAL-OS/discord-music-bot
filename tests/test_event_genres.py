@@ -49,6 +49,45 @@ def test_genre_words_inside_an_event_name_do_not_fire() -> None:
     assert "cabaret" not in genres_in_text("Non-Stop Erotic Cabaret: a goth night", vocab)
 
 
+def test_the_events_own_venue_name_is_not_a_genre() -> None:
+    """'Radian at Poetry Lounge.' gave every show in that room the genre 'lounge'."""
+    vocab = (*VOCAB, "blues", "opera")
+    text = "Radian at Poetry Blues."
+    assert genres_in_text(text, vocab) == ("blues",)
+    assert genres_in_text(text, vocab, venue="Poetry Blues") == ()
+    assert genres_in_text("radian at poetry blues", vocab, venue="Poetry Blues") == ()
+    assert genres_in_text("Live at The Opera House", vocab, venue="The Opera House") == ()
+
+
+def test_a_shortened_venue_name_is_still_the_venue() -> None:
+    vocab = (*VOCAB, "blues")
+    assert (
+        genres_in_text("Tonight at House of Blues", vocab, venue="House of Blues Cleveland") == ()
+    )
+
+
+def test_a_genre_named_elsewhere_survives_the_venue_being_removed() -> None:
+    vocab = (*VOCAB, "blues")
+    found = genres_in_text("A goth night at Poetry Blues", vocab, venue="Poetry Blues")
+    assert found == ("goth",)
+    # One word of the venue's name is not a mention of the venue.
+    assert genres_in_text("A metal night", VOCAB, venue="Metal Hall") == ("metal",)
+
+
+def test_words_either_side_of_the_venue_do_not_join_into_a_genre() -> None:
+    assert genres_in_text("post at Poetry Hall punk", VOCAB, venue="Poetry Hall") == ()
+
+
+def test_lounge_alone_is_a_room_not_a_genre() -> None:
+    vocab = (*VOCAB, "lounge")
+    assert genres_in_text("The 1924 Lounge is not wheelchair accessible", vocab) == ()
+
+
+def test_from_text_ignores_the_venue_it_is_given() -> None:
+    classifier = EventGenreClassifier(Settings(_env_file=None), (*VOCAB, "blues"))
+    assert classifier.from_text("Radian", "Radian at Poetry Blues.", "Poetry Blues") == ()
+
+
 def test_the_most_specific_genre_wins() -> None:
     """A bill of melodic death metal is not also filed under plain metal."""
     assert genres_in_text("A night of melodic death metal", VOCAB) == ("melodic death metal",)

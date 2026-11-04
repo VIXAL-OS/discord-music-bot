@@ -314,7 +314,7 @@ class DiscoveryOrchestrator:
                 # Before scoring, so a listing that names its genres in prose is
                 # judged on them rather than being gated as though it had none.
                 if self.genres is not None and not event.genres:
-                    named = self.genres.from_text(event.title, event.description)
+                    named = self.genres.from_text(event.title, event.description, event.venue)
                     if named:
                         event = replace(event, genres=named)
                 score = score_event(
