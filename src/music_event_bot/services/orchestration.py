@@ -19,6 +19,7 @@ from music_event_bot.domain.models import (
 )
 from music_event_bot.domain.normalization import normalize_text, normalize_venue
 from music_event_bot.domain.scoring import FOLLOWED_BY_MEMBERS, score_event
+from music_event_bot.domain.venues import VenueCoordinates, address_city_state
 from music_event_bot.storage.repositories import EventRepository
 from music_event_bot.taste.event_genres import EventGenreClassifier
 
@@ -119,6 +120,13 @@ def _apply_address_book(event: DiscoveredEvent, book: dict[str, str]) -> Discove
     for fragment, curated in book.items():
         normalized = f" {normalize_text(fragment)} "
         if venue_padded and normalized in venue_padded:
+            # A fragment is not a venue identity: "eagle" also matches
+            # Soaring Eagle Casino in Michigan. Never replace an explicit
+            # different city/state with the local room's address.
+            listed_city = address_city_state(event.location)
+            curated_city = address_city_state(curated)
+            if all(listed_city) and all(curated_city) and listed_city != curated_city:
+                return event
             if not (echo or not event.location or _contradicts(event.location, curated)):
                 return event
             return _fill(event, event.venue or curated.split(",", 1)[0].strip(), curated)
@@ -171,6 +179,7 @@ class DiscoveryOrchestrator:
         self.artwork = artwork
         self.genres = genres
         self.blocklist = blocklist or Blocklist()
+        self.venue_coordinates = VenueCoordinates.load(settings.venue_coordinates_path)
         # Set by the Discord bot, which owns the publication service. Left None
         # for CLI runs (scrape-once) and tests, where there is no live guild to
         # push to and discovery must still complete.
@@ -292,6 +301,11 @@ class DiscoveryOrchestrator:
             address_book = self.settings.venue_address_map
             for event in source_events:
                 event = _apply_address_book(event, address_book)
+                pin = self.venue_coordinates.resolve(event.venue, event.location)
+                if pin is not None:
+                    event = replace(
+                        event, venue_latitude=pin.latitude, venue_longitude=pin.longitude
+                    )
                 blocked_match = self.blocklist.match(event)
                 if blocked_match is not None:
                     logger.info(

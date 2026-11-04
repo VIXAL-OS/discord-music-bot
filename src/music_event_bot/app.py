@@ -12,7 +12,7 @@ from music_event_bot.discovery.squarespace import SquarespaceSource
 from music_event_bot.discovery.ticketmaster import TicketmasterSource
 from music_event_bot.domain.blocklist import Blocklist
 from music_event_bot.domain.models import TasteProfile
-from music_event_bot.domain.venues import VenueAliases
+from music_event_bot.domain.venues import VenueAliases, VenueCoordinates
 from music_event_bot.services.orchestration import DiscoveryOrchestrator
 from music_event_bot.storage.database import Database
 from music_event_bot.storage.repositories import EventRepository
@@ -71,6 +71,11 @@ class Application:
         if aliases_added:
             logger.info("Seeded %d genre->role aliases from cached tag mappings", aliases_added)
         await repository.backfill_ticketmaster_coordinates()
+        repaired = await repository.apply_venue_coordinates(
+            VenueCoordinates.load(settings.venue_coordinates_path)
+        )
+        if repaired:
+            logger.info("Corrected stored coordinates for %d venue listings", repaired)
         await repository.backfill_venue_coordinates()
         await repository.rescore_reviewable_events(
             profile,

@@ -29,7 +29,7 @@ from music_event_bot.domain.normalization import (
     strip_tour_suffix,
 )
 from music_event_bot.domain.scoring import score_event
-from music_event_bot.domain.venues import VenueAliases, same_locality
+from music_event_bot.domain.venues import VenueAliases, VenueCoordinates, same_locality
 from music_event_bot.storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -1948,6 +1948,31 @@ class EventRepository:
                     (match[0], match[1], now, row["id"]),
                 )
                 updated += result.rowcount
+            await connection.commit()
+        return updated
+
+    async def apply_venue_coordinates(self, coordinates: VenueCoordinates) -> int:
+        """Repair stored pins without changing approval or publication history."""
+        if not coordinates.entries:
+            return 0
+        updated = 0
+        async with self.database.connect() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "SELECT id, venue, location, venue_latitude, venue_longitude FROM events"
+            )
+            for row in await cursor.fetchall():
+                pin = coordinates.resolve(row["venue"], row["location"])
+                if pin is None or (row["venue_latitude"], row["venue_longitude"]) == (
+                    pin.latitude, pin.longitude
+                ):
+                    continue
+                await connection.execute(
+                    "UPDATE events SET venue_latitude = ?, venue_longitude = ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (pin.latitude, pin.longitude, _now().isoformat(), row["id"]),
+                )
+                updated += 1
             await connection.commit()
         return updated
 

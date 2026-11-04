@@ -300,6 +300,46 @@ def test_address_book_corrects_a_wrong_address_when_keyed_by_venue() -> None:
     assert _apply_address_book(other, book) is other
 
 
+def test_local_address_fragment_does_not_relocate_an_out_of_town_venue() -> None:
+    from music_event_bot.services.orchestration import _apply_address_book
+
+    casino = DiscoveredEvent(
+        source_name="ticketmaster",
+        source_event_id="soaring-eagle",
+        title="Casino Show",
+        venue="Soaring Eagle Casino & Resort",
+        location="6800 E Soaring Eagle Blvd, Mount Pleasant, MI, 48858, US",
+    )
+    book = {"eagle": "The Eagle, 1740 Eckert St, Pittsburgh, PA 15212"}
+    assert _apply_address_book(casino, book) is casino
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_name", ["ticketmaster", "calendar"])
+async def test_verified_venue_pin_applies_before_the_travel_gate(
+    complete_event, source_name
+) -> None:
+    from dataclasses import replace
+
+    event = replace(
+        complete_event,
+        venue="Empty Bottle",
+        location="1035 N. Western Ave., Chicago, IL, 60622, US",
+        venue_latitude=41.900476,
+        venue_longitude=-74.0059413,
+    )
+    repository = RecordingRepository()
+    orchestrator = DiscoveryOrchestrator(
+        Settings(_env_file=None),
+        cast(EventRepository, repository),
+        [StaticSource(source_name, [event])],
+        TasteProfile(genres=("indie",)),
+    )
+    summary = await orchestrator.run()
+    assert summary.ignored_out_of_radius == 1
+    assert repository.upserts == []
+
+
 def test_address_book_leaves_addresses_it_does_not_contradict() -> None:
     """The book corrects wrong listings, it does not overwrite good ones.
 

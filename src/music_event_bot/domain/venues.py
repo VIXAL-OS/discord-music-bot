@@ -28,6 +28,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from music_event_bot.domain.geography import GeoPoint
 from music_event_bot.domain.normalization import normalize_venue
 
 logger = logging.getLogger(__name__)
@@ -131,3 +132,47 @@ def same_locality(first: str | None, second: str | None) -> bool:
     if first_zip and second_zip:
         return first_zip == second_zip
     return first_city is not None and first_city == second_city
+
+
+@dataclass(frozen=True, slots=True)
+class VenueCoordinate:
+    location: str
+    point: GeoPoint
+
+
+@dataclass(frozen=True, slots=True)
+class VenueCoordinates:
+    """Checked venue pins, scoped to a room's full name and locality.
+
+    Ticketmaster sometimes supplies Manhattan coordinates for venues in
+    other states. Preserve its raw payload, but use these verified pins for
+    scoring, routing and the travel-radius gate across every source.
+    """
+
+    entries: dict[str, tuple[VenueCoordinate, ...]] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, path: Path) -> VenueCoordinates:
+        if not path.exists():
+            return cls()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, list):
+                raise ValueError("expected a JSON array")
+            entries: dict[str, list[VenueCoordinate]] = {}
+            for item in raw:
+                name = normalize_venue(item["name"])
+                location = str(item["location"])
+                if not name or address_city_state(location) == (None, None):
+                    raise ValueError("each pin needs a venue name and city/state")
+                point = GeoPoint(float(item["latitude"]), float(item["longitude"]))
+                entries.setdefault(name, []).append(VenueCoordinate(location, point))
+            return cls({name: tuple(pins) for name, pins in entries.items()})
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"Could not read venue coordinates {path}: {exc}") from None
+
+    def resolve(self, venue: str | None, location: str | None) -> GeoPoint | None:
+        for pin in self.entries.get(normalize_venue(venue), ()):
+            if same_locality(location, pin.location):
+                return pin.point
+        return None

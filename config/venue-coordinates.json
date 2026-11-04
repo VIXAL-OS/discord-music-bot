@@ -1,0 +1,50 @@
+[
+  {
+    "name": "Empty Bottle",
+    "location": "1035 N Western Ave, Chicago, IL 60622",
+    "latitude": 41.9004807,
+    "longitude": -87.6866529,
+    "note": "Ticketmaster venue rZ7HnEZaeqM has Chicago latitude but Manhattan longitude. Verified 2026-10-19.",
+    "source": "https://www.openstreetmap.org/node/6315209496"
+  },
+  {
+    "name": "What's Left Records",
+    "location": "2217 E Platte Ave, Colorado Springs, CO 80909",
+    "latitude": 38.8366816,
+    "longitude": -104.7881997,
+    "note": "Ticketmaster venue KovZpZAJdAvA incorrectly uses Manhattan coordinates. Verified 2026-10-19.",
+    "source": "https://www.openstreetmap.org/way/199756705"
+  },
+  {
+    "name": "Cosmic Arts",
+    "location": "310 E High St, Pottstown, PA 19464",
+    "latitude": 40.2451766,
+    "longitude": -75.6471526,
+    "note": "Ticketmaster venue KovZpa6Hpe incorrectly uses Manhattan coordinates. Verified address pin 2026-10-19.",
+    "source": "https://www.openstreetmap.org/way/1063942076"
+  },
+  {
+    "name": "Bull Shooters",
+    "location": "3337 W Peoria Ave, Phoenix, AZ 85029",
+    "latitude": 33.5806907,
+    "longitude": -112.1327747,
+    "note": "Source incorrectly uses Manhattan coordinates. Verified 2026-10-19.",
+    "source": "https://www.openstreetmap.org/node/7160194497"
+  },
+  {
+    "name": "Rec Room",
+    "location": "79 W Chippewa St, Buffalo, NY 14202",
+    "latitude": 42.890845,
+    "longitude": -78.875831,
+    "note": "Source longitude -76.875859 is about 100 miles east of Buffalo. Verified 2026-10-19.",
+    "source": "https://www.openstreetmap.org/node/13833098267"
+  },
+  {
+    "name": "Celebrity Theatre at the Claridge Hotel",
+    "location": "123 S Indiana Ave, Atlantic City, NJ 08401",
+    "latitude": 39.3577293,
+    "longitude": -74.4319235,
+    "note": "Source puts the Atlantic City hotel in northern NJ. Verified hotel pin 2026-10-19.",
+    "source": "https://www.openstreetmap.org/way/539884858"
+  }
+]

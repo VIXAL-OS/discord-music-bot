@@ -120,6 +120,8 @@ class Settings(BaseSettings):
     # does not treat them as different shows. A JSON array of
     # {"name": ..., "aliases": [...], "note": ...}; see domain/venues.py.
     venue_aliases_path: Path = Path("config/venue-aliases.json")
+    # Verified pins for upstream venue-coordinate errors, scoped by name and locality.
+    venue_coordinates_path: Path = Path("config/venue-coordinates.json")
 
     ticketmaster_api_key: SecretStr | None = None
     # Centre of the coverage region. Defaults to downtown Pittsburgh; set

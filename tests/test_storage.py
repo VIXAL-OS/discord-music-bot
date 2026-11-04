@@ -486,6 +486,36 @@ async def test_coordless_events_borrow_coordinates_from_the_same_room(
 
 
 @pytest.mark.asyncio
+async def test_checked_pins_repair_existing_coordinates_and_preserve_decisions(
+    repository, complete_event
+) -> None:
+    from pathlib import Path
+
+    from music_event_bot.domain.venues import VenueCoordinates
+
+    pin_book = VenueCoordinates.load(Path("config/venue-coordinates.json"))
+    chicago = replace(
+        complete_event, source_event_id="empty-chicago", venue="The Empty Bottle",
+        location="1035 N Western Ave, Chicago, IL 60622",
+        venue_latitude=41.900476, venue_longitude=-74.0059413,
+    )
+    other_city = replace(
+        chicago, source_event_id="empty-elsewhere", title="Another Show",
+        location="1 Main St, Pittsburgh, PA 15212",
+    )
+    first = await repository.upsert_discovered(chicago, _ARTIST_MATCH_SCORE)
+    second = await repository.upsert_discovered(other_city, _ARTIST_MATCH_SCORE)
+    await repository.reject(first.event.id, reviewer_id=42, reason="keep this decision")
+    assert await repository.apply_venue_coordinates(pin_book) == 1
+    fixed = await repository.get_event(first.event.id)
+    untouched = await repository.get_event(second.event.id)
+    assert fixed.status == EventStatus.REJECTED
+    assert fixed.venue_longitude == pytest.approx(-87.6866529)
+    assert untouched.venue_longitude == pytest.approx(-74.0059413)
+    assert await repository.apply_venue_coordinates(pin_book) == 0
+
+
+@pytest.mark.asyncio
 async def test_published_with_closer_pending_flags_the_mistake(
     repository, complete_event
 ) -> None:
